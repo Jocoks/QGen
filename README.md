@@ -1,0 +1,185 @@
+# QGen Android 1.3.6
+
+**QSP 游戏（`.qsp`）编辑器 · 安卓版**
+
+本项目是把开源桌面程序 [QGen](https://github.com/QSPFoundation/qgen)（QSP Foundation，GPLv2+）的核心能力
+搬到 Android 上的一次**重实现**：界面用 WebView + 原生 JS 重写，QSP 文件格式的读写逻辑按 QGen 4.3 的
+`game.cpp` 逐字节对齐，Java 侧只保留「读/写字节」的薄壳。
+
+已实测：用本 App 打开 8.6 MB 的 `jack.qsp`（194 个位置、约 421 万字符代码），**原样保存后与原文件 md5 完全一致**
+（`7b603abd9df2d71b9f2e0518ec021173`），即读写无损。
+
+> **1.3.6 变更**：编辑器只保留**代码页** —— 去掉了「描述」「动作」两个页签，点开位置就直接开始写代码。
+> 文件里原有的描述 / 动作数据仍按 QSP 格式完整解析与写回，**保存时不会被改动或丢弃**。
+
+---
+
+## 〇、先看「关于」
+
+App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板，直接显示：
+
+- 地址：`http://127.0.0.1:8790/mcp`
+- 状态：● 运行中 / 未运行（App 会实时探测，没有服务进程也可以看）
+- 工具数：运行中时显示 13 个
+- 启动命令（长按可复制）与 APK 内置文件路径
+
+## 一、功能
+
+| 功能 | 说明 |
+|---|---|
+| 打开 `.qsp` | 通过系统文件选择器（SAF）从下载 / 文档 / 任意目录打开；也可从「最近打开」或应用私有目录打开 |
+| 位置列表 | 全部位置一览，显示代码字数；支持按名称、代码搜索过滤 |
+| 搜索结果 | 每条结果显示命中次数（按 代码/名称 拆分）；**只命中一处**时直接显示命中行（关键字前后各 15 字，超长以 … 截断，关键字高亮） |
+| 编辑位置 | 点开位置**直接进入代码页**（没有页签，进来就是代码） |
+| 代码高亮 | QSP 语法着色：注释、字符串、数字、关键字、`$变量`、运算符（默认开启，底部「高亮」可一键关闭；超长代码自动关闭以保证流畅） |
+| 字号缩放 | 代码页**双指捏合**直接缩放，或点 `A−` / `A+`（8–28px），偏好会记住 |
+| 行距/换行 | `行距` 在 115% / 130% / 145% / 170% 间切换（默认 130%）；可切换「自动换行」（换行时隐藏行号，避免行号错位） |
+| 代码内查找 | 右上角 🔍 打开查找条：输入即高亮全部命中并显示 `n/总数`，`↑`/`↓` 跳转，当前命中深黄色 |
+| 行号 | 代码页左侧行号，随滚动同步 |
+| 位置管理 | 新建位置、重命名、创建副本、删除 |
+| 游戏信息 | 位置数、代码字数、密码、文件头；可修改游戏密码 |
+| 保存 | 保存回原文件（SAF 持久授权）；**另存为**新建 `.qsp`（默认文件名可在对话框里改） |
+| 未保存提示 | 标题 `●` / 底部「未保存」标记；退出、关闭、重新载入前都会确认 |
+| 竖屏 | 固定竖屏，不随重力旋转 |
+| 最近打开 | 记住最近 12 个文件（含持久读/写授权） |
+
+**有意未实现**（见「已知限制」）：QGen 的文件夹（project .xml）结构、txt2gam 文本导入导出、
+内置 QSP 播放器（需另移植 qspcore）。
+
+## 二、界面与配色
+
+浅色主题：**白底为主、黄色点缀**（主色 `#FFC400`，用于 Logo、主按钮、未保存标记与强调文字），
+代码区用等宽字体 + 语法着色，长代码默认不换行（可横向滚动），可一键切换换行。
+
+1.3.6 的界面截图见 `docs/screenshots/`：点开位置即代码页、右上角查找、游戏信息。
+
+## 三、安装
+
+APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android-1.3.6.apk`
+（minSdk 26 / targetSdk 34，已用 debug 证书签名）。
+
+1. 把 APK 传到手机，点开安装；如提示「未知来源」，允许一次即可。
+2. 首次打开从「打开 .qsp 文件」开始。
+
+> 签名是自签名（debug keystore），仅用于自用/测试；正式分发请自行换 keystore 重新签名。
+
+## 四、使用
+
+1. **打开**：首页 →「打开 .qsp 文件」→ 选中文件（例如 `/sdcard/Download/game.qsp`）。
+2. **浏览**：位置列表 + 顶部搜索框（搜名称/代码）。
+3. **编辑**：点位置 → **直接进入代码页**（描述与动作页签已移除）。编辑后标题出现 `●`。
+   代码页默认带语法高亮；底部还有 `A−/A+ 字号`、`高亮`、`行距`、`换行` 四个控制。
+   代码页：**双指捏合**缩放字号，或底部 `A−` / `A+`；`行距` 切档；`换行` 开关；
+   点右上角 🔍 在当前代码里查找，↑/↓ 跳到上一处/下一处。语法高亮随输入实时更新。
+4. **保存**：右上 `⋮` → 保存（写回原文件）；或「另存为…」。
+5. **搜索定位**：搜索框输入关键字 → 列表只剩命中的位置 → 点开编辑。
+
+## 五、QSP 文件格式（实现依据）
+
+依据 `qgen/game.cpp`（QGen 4.3.0-b1）与实测 `jack.qsp` 反推，文件是 **UCS-2LE（UTF-16LE 码元）** 文本：
+
+```
+QSPGAME\r\n                 文件标识（不加密）
+<日期/版本>\r\n              不加密
+<密码>\r\n                   加密（默认 "No"）
+<位置数>\r\n                 加密
+for each location:
+  <名称>\r\n <描述>\r\n <代码>\r\n <动作数>\r\n
+  for each action:
+    <图片路径>\r\n <动作名>\r\n <动作代码>\r\n
+```
+
+加密规则（`QSP_CODREMOV = 5`）：每个码元 `v` 写为 `v-5`；若原字符恰为 `5`，写作 `0xFFFB`（避免产生 `\0`）。
+读取时反过来：`0xFFFB → 5`，其余 `+5`。字段内换行以 `\r\n` 存储。
+
+> 编辑器虽然不再显示描述与动作，但 `parse()` / `serialize()` 仍完整读写这两块字段，
+> 所以打开旧 `.qsp` 再保存，描述与动作会原样保留。
+
+实现见 `assets/ui/qsp.js`（`parse()` / `serialize()`），并有 Node 测试 `tools/test-qsp.js`：
+
+```
+$ node tools/test-qsp.js /path/to/jack.qsp
+  解析耗时 80ms，位置 194，动作 0 ...
+  ok  未修改时逐字节无损往返
+  ok  特殊字符往返（5 / 换行 / emoji / 引号）
+  结果: 8 通过, 0 失败
+```
+
+## 六、源码结构
+
+```
+AndroidManifest.xml            竖屏锁定、SAF/VIEW 入口
+java/com/qsp/qgen/MainActivity.java   唯一 Activity：WebView + JS 桥（文件读写、SAF、最近文件）
+assets/ui/index.html           界面结构
+assets/ui/style.css            浅色主题（白 + 黄）+ 移动端布局
+assets/ui/qsp.js               ★ QSP 格式读写核心（浏览器/Node 通用）
+assets/ui/syntax.js            QSP 语法高亮（纯函数，可 Node 测试）
+assets/ui/native.js            JS ↔ Java 桥接层（浏览器演示模式降级）
+assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存）
+mcp/server.js                  ★ MCP 本地服务（stdio，AI 可直接读写 .qsp）
+mcp/README.md                  MCP 工具文档
+mcp/selftest.js                MCP 自测脚本
+res/                          图标（自适应矢量）、主题、字符串
+build.sh                       设备内构建脚本
+tools/test-qsp.js              Node 端编解码测试
+```
+
+## 七、构建（在 Android 设备上直接构建，无需 Gradle）
+
+本仓库自带 `build.sh`，使用 Termux 环境里的 `aapt2` + `d8` + `apksigner` + JDK17：
+
+```bash
+# 依赖：aapt2、d8.jar、apksigner.jar（Termux: aapt / d8 / apksigner 包）、JDK 17、
+#      android.jar（Android platform，例如 platform-35）、一个签名用 keystore
+export PREFIX=/data/data/com.termux/files/usr          # 你的 Termux 前缀
+export ANDROID_JAR=$HOME/android-sdk/platforms/android-35/android.jar
+export KEYSTORE=$HOME/.android/debug.keystore           # 签名证书
+./build.sh build/qgen-android.apk
+# 产物：build/qgen-android.apk（已签名）
+```
+
+`KS_PASS` 可覆盖 keystore 密码（默认 `pass:android`，即 Android 默认 debug keystore 的密码）。
+
+`build.sh` 做四件事：`aapt2 compile/link` → `javac`（对 android.jar）→ `d8` → 打 dex + `apksigner`。
+
+## 八、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
+
+`mcp/` 里附带一个 stdio MCP 服务，让 AI 直接查找/阅读/修改 `.qsp`：
+
+```bash
+# 1) 起 HTTP 服务（只监听 127.0.0.1:8790，端口可改）
+#    用 setsid/nohup 让它脱离当前会话，避免一起被回收
+setsid nohup sh <项目目录>/mcp/start-http.sh 8790 > ~/qsp-mcp.log 2>&1 < /dev/null &
+
+# 2) 在 DeepSeek Harness 里注册（地址:端口 形式）
+mcp_hub_add name=qsp transport=streamable-http url=http://127.0.0.1:8790/mcp
+
+# 或者用 stdio（由客户端拉起进程）：
+# mcp_hub_add name=qsp transport=stdio command=<node> args=["<项目目录>/mcp/server.js"]
+```
+
+APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 `qsp.js` 编解码）：
+从 APK 里取出后 `node assets/mcp/server.js --http 8790` 即可起 HTTP 版，
+不带参数则走 stdio。
+
+13 个工具：`qsp_info` / `qsp_list_locations` / `qsp_get_location` / `qsp_search` /
+`qsp_set_location` / `qsp_replace` / `qsp_replace_all` / `qsp_add_location` /
+`qsp_rename_location` / `qsp_delete_location` / `qsp_action` / `qsp_create` / `qsp_validate`。
+
+安全：写入前自动 `.bak` 备份、临时文件原子替换、写后重新解析校验、批量替换默认干跑。
+详见 [mcp/README.md](mcp/README.md)。
+
+## 九、已知限制
+
+* 只支持 **UCS-2 新版** `.qsp`（`QSPGAME` 头）。QGen 4 之前的旧 `.gam` 格式会提示不支持。
+* 不支持 QGen 的「文件夹」工程结构（`.xml` 工程文件），位置列表是平铺的。
+* 没有内置 QSP 运行时，所以**不能试玩**；纯编辑/保存。试玩可把 `.qsp` 交给 FastQSP / QSP 播放器。
+* 没有文本（txt2gam）导入导出。
+* 一次只打开一个文件；未做自动保存草稿。
+
+## 十、许可与致谢
+
+* 本程序以 **GPLv2+** 发布，与 QGen 一致。
+* 文件格式实现参考 QGen 4.3（作者 Vladimir Bauer / Nex / Shchannikov Dmitry / Valeriy Argunov），
+  项目地址 <https://github.com/QSPFoundation/qgen>。
+* QSP 引擎与本编辑器无关，见 <https://github.com/QSPFoundation>。
