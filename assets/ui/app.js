@@ -21,7 +21,7 @@
     busy: false,
     records: {
       scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
-      active: null, table: null, q: '', undo: []
+      active: null, table: null, q: '', undo: [], hideEmpty: recHideEmptyPref()
     }
   };
 
@@ -451,7 +451,7 @@
   function resetRecords() {
     S.records = {
       scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
-      active: null, table: null, q: '', undo: []
+      active: null, table: null, q: '', undo: [], hideEmpty: recHideEmptyPref()
     };
     var list = $('rec-family-list');
     var panel = $('rec-table-panel');
@@ -462,12 +462,41 @@
     if ($('rec-search')) $('rec-search').value = '';
     if ($('rec-search-clear')) $('rec-search-clear').hidden = true;
     if ($('rec-count')) $('rec-count').textContent = '尚未扫描';
+    recUpdateEmptyBtn();
   }
 
   var recMemStore = {};
 
   function recStoreKey(id) {
     return 'qgen.records.v1.' + (S.file.name || 'untitled') + '.' + id;
+  }
+  function recHideEmptyPref() {
+    try { return localStorage.getItem('qgen.records.hideEmpty') !== '0'; }
+    catch (e) { return true; }
+  }
+
+  function recHiddenFields() {
+    var a = S.records.active;
+    var list = a && a.descriptor && a.descriptor.hiddenFields;
+    return Array.isArray(list) ? list : [];
+  }
+
+  function recColumnHasData(t, c) {
+    if (c.source && c.source.kind === 'manual') return true; // 人工列即使空也保留，方便填写
+    for (var i = 0; i < t.rows.length; i++) {
+      var v = t.rows[i].values[c.key];
+      if (v != null && String(v) !== '') return true;
+    }
+    return false;
+  }
+
+  function recVisibleColumns(t) {
+    var hidden = recHiddenFields();
+    return t.columns.filter(function (c) {
+      if (hidden.indexOf(c.key) >= 0) return false;
+      if (S.records.hideEmpty && !recColumnHasData(t, c)) return false;
+      return true;
+    });
   }
 
   function recStoreGet(key) {
@@ -645,8 +674,9 @@
       }
       return false;
     });
+    var cols = recVisibleColumns(t);
     var html = '<table class="rec-table"><thead><tr><th>id</th>';
-    t.columns.forEach(function (c) {
+    cols.forEach(function (c) {
       var canEdit = !c.readOnly && !(c.source && c.source.kind === 'literal');
       html += '<th>' + esc(c.label) + '<span class="rec-col-type">' + esc(c.type) +
         (canEdit ? ' · 可改' : ' · 只读') + '</span></th>';
@@ -654,7 +684,7 @@
     html += '</tr></thead><tbody>';
     rows.slice(0, REC_ROW_LIMIT).forEach(function (r) {
       html += '<tr><td data-label="id" title="' + esc(r.id) + '">' + esc(r.id) + '</td>';
-      t.columns.forEach(function (c) {
+      cols.forEach(function (c) {
         var v = r.values[c.key];
         var fl = r.flags[c.key] || [];
         var src = c.source || {};
@@ -669,6 +699,7 @@
         if (conflict) cls.push('rec-conflict');
         if (isManual) cls.push('rec-manual');
         if (editable) cls.push('rec-editable');
+        if (S.records.hideEmpty && (v === '' || missing)) cls.push('rec-empty-cell');
         var attrs = ' data-label="' + esc(c.label) + '" data-id="' + esc(r.id) +
           '" data-field="' + esc(c.key) + '"';
         if (isManual) attrs += ' data-name="' + esc(src.name) + '"';
@@ -684,10 +715,13 @@
     html += '</tbody></table>';
     if (!rows.length) html = '<div class="rec-note">没有匹配的记录</div>';
     $('rec-table-wrap').innerHTML = html;
-    var msg = rows.length + ' / ' + t.rows.length + ' 条记录 · ' + t.columns.length + ' 列';
+    var msg = rows.length + ' / ' + t.rows.length + ' 条记录 · ' + cols.length + ' / ' + t.columns.length + ' 列';
     if (rows.length > REC_ROW_LIMIT) msg += '（仅显示前 ' + REC_ROW_LIMIT + ' 条）';
+    if (S.records.hideEmpty) msg += ' · 空值已隐藏';
     var warn = t.warnings && t.warnings.length ? ' · ' + t.warnings.length + ' 条字段警告' : '';
     $('rec-count').textContent = msg + warn + ' · 点单元格可修改';
+    $('btn-rec-empty').classList.toggle('on', !!S.records.hideEmpty);
+    $('btn-rec-empty').setAttribute('aria-pressed', S.records.hideEmpty ? 'true' : 'false');
     $('rec-empty').hidden = rows.length > 0;
     recUpdateUndoBtn();
   }
@@ -712,7 +746,7 @@
     if (!t || !t.ok) { toast('请先打开一个记录族'); return; }
     var base = (S.file.name || 'qgen').replace(/\.qsp$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
     var id = (S.records.active && S.records.active.descriptor.id || 'table').replace(/[^A-Za-z0-9_.-]+/g, '_');
-    var text = QSPRecords.tableToCSV(t);
+    var text = QSPRecords.tableToCSV({ columns: recVisibleColumns(t), rows: t.rows });
     Native.saveText(text, base + '.' + id + '.csv');
     toast('准备导出 ' + t.rows.length + ' 条记录…');
   }
@@ -791,6 +825,56 @@
       } }]);
     $('rf-kind').addEventListener('change', recFieldFormToggle);
     recFieldFormToggle();
+  }
+
+  function recUpdateEmptyBtn() {
+    var b = $('btn-rec-empty');
+    if (!b) return;
+    b.classList.toggle('on', !!S.records.hideEmpty);
+    b.setAttribute('aria-pressed', S.records.hideEmpty ? 'true' : 'false');
+    b.title = S.records.hideEmpty ? '空值已隐藏，点击显示' : '空值已显示，点击隐藏';
+  }
+
+  function recToggleEmpty() {
+    S.records.hideEmpty = !S.records.hideEmpty;
+    try { localStorage.setItem('qgen.records.hideEmpty', S.records.hideEmpty ? '1' : '0'); } catch (e) { }
+    recUpdateEmptyBtn();
+    renderRecordTable();
+    toast(S.records.hideEmpty ? '已隐藏空值字段' : '已显示空值字段');
+  }
+
+  function recOpenColumns() {
+    var a = S.records.active, t = S.records.table;
+    if (!a || !t || !t.ok) { toast('请先打开一个记录族'); return; }
+    var hidden = recHiddenFields();
+    var list = t.columns.map(function (c) {
+      var checked = hidden.indexOf(c.key) < 0 ? ' checked' : '';
+      return '<label class="rec-col-item"><input type="checkbox" data-key="' + esc(c.key) + '"' + checked + '>' +
+        '<span class="rec-col-name">' + esc(c.label) + '</span>' +
+        '<span class="rec-col-meta">' + esc(c.type) + '</span></label>';
+    }).join('');
+    var box = showModal('显示列',
+      '<h3>显示列</h3>' +
+      '<div class="hint">取消勾选即可隐藏不关心的子属性；列设置按记录族保存在本机。</div>' +
+      '<div class="rec-col-actions"><button type="button" class="text-btn" id="rec-col-all">全选</button>' +
+      '<button type="button" class="text-btn" id="rec-col-none">全不选</button></div>' +
+      '<div class="rec-col-list">' + list + '</div>',
+      [{ text: '取消' }, { text: '确定', primary: true, fn: function () {
+        var keep = {};
+        var boxes = box.querySelectorAll('input[data-key]');
+        for (var i = 0; i < boxes.length; i++) keep[boxes[i].dataset.key] = boxes[i].checked;
+        a.descriptor.hiddenFields = t.columns.filter(function (c) { return !keep[c.key]; })
+          .map(function (c) { return c.key; });
+        recSaveDescriptor(a.descriptor);
+        renderRecordTable();
+        toast('已更新显示列');
+      } }]);
+    box.querySelector('#rec-col-all').addEventListener('click', function () {
+      box.querySelectorAll('input[data-key]').forEach(function (x) { x.checked = true; });
+    });
+    box.querySelector('#rec-col-none').addEventListener('click', function () {
+      box.querySelectorAll('input[data-key]').forEach(function (x) { x.checked = false; });
+    });
   }
 
   function recUpdateUndoBtn() {
@@ -1496,6 +1580,8 @@
     $('btn-rec-csv').addEventListener('click', recExportCSV);
     $('btn-rec-back').addEventListener('click', recBack);
     $('btn-rec-add-field').addEventListener('click', recAddField);
+    $('btn-rec-columns').addEventListener('click', recOpenColumns);
+    $('btn-rec-empty').addEventListener('click', recToggleEmpty);
     $('btn-rec-undo').addEventListener('click', recUndo);
     $('rec-family-list').addEventListener('click', function (e) {
       var card = e.target.closest('[data-fam]');

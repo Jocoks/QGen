@@ -593,6 +593,14 @@
         if (['text', 'number', 'code', 'boolean'].indexOf(f.type) < 0) errors.push(p + '.type 不支持：' + f.type);
         errors = errors.concat(validateSource(f.source, p + '.source'));
       });
+      if (d.hiddenFields != null) {
+        if (!Array.isArray(d.hiddenFields)) errors.push('hiddenFields 必须是数组');
+        else {
+          var known = {};
+          d.fields.forEach(function (f) { known[f.key] = true; });
+          d.hiddenFields = d.hiddenFields.map(String).filter(function (k) { return !!known[k]; });
+        }
+      }
     }
     return { ok: errors.length === 0, errors: errors, descriptor: errors.length ? null : d };
   }

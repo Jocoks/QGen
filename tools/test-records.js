@@ -193,5 +193,23 @@ ok('edit array field and reject compound assignment', function () {
   truth(!numRes.ok && /不支持直接编辑/.test(numRes.error), 'compound assignment should be rejected');
 });
 
+ok('hiddenFields validated and preserved', function () {
+  var d = {
+    version: 1, id: 'h', label: 'h',
+    scope: { locations: ['*'] },
+    records: { kind: 'keyed' },
+    fields: [
+      { key: 'a', label: 'A', source: { kind: 'literal', value: 'x' } },
+      { key: 'b', label: 'B', source: { kind: 'literal', value: 'y' } }
+    ],
+    hiddenFields: ['b', 'gone']
+  };
+  var v = R.validateDescriptor(d);
+  truth(v.ok, (v.errors || []).join(';'));
+  truth(v.descriptor.hiddenFields.length === 1 && v.descriptor.hiddenFields[0] === 'b', 'known hidden key kept only');
+  d.hiddenFields = 'b';
+  truth(!R.validateDescriptor(d).ok, 'non-array hiddenFields rejected');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
