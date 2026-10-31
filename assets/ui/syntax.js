@@ -11,9 +11,18 @@
   var KEYWORDS = ('if elseif else end act goto gosub gt gs jump clr cls cla killall killvar ' +
     'addobj delobj addloc delloc loc obj xgt xnl scanstr dynamic nvar nl pl pnl print msg ' +
     'input wait menu exit loop unloop func setvar getvar inc dec copyarr sortarr flushobj ' +
-    'clearscreen show desc set_counter err def return local global').split(' ');
+    'clearscreen show desc set_counter err def return local global and or not xor mod').split(' ');
   var KW = Object.create(null);
   for (var i = 0; i < KEYWORDS.length; i++) KW[KEYWORDS[i]] = 1;
+
+  // 控制流 / 逻辑词 / 常量单独着色，避免所有关键字挤在同一种棕色里
+  var CONTROL = Object.create(null);
+  ('if elseif else end act goto gosub gt gs jump exit loop unloop func return local global')
+    .split(' ').forEach(function (w) { CONTROL[w] = 1; });
+  var LOGICAL = Object.create(null);
+  ('and or not xor mod').split(' ').forEach(function (w) { LOGICAL[w] = 1; });
+  var CONST = Object.create(null);
+  ('true false null').split(' ').forEach(function (w) { CONST[w] = 1; });
 
   var OPS = '+-*/=<>!&.,:;()[]{}';
 
@@ -31,6 +40,11 @@
   function isDigit(c) { return c >= 48 && c <= 57; }
   function isWord(c) {
     return (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 36 || c === 35;
+  }
+  function opClass(ch) {
+    if ('<>=!'.indexOf(ch) >= 0) return 'oc';       // 比较 / 逻辑
+    if ('+-*/'.indexOf(ch) >= 0) return 'oa';       // 算术
+    return 'op';                                     // 标点、分隔符
   }
 
   /** 词法切片：返回 [{s,e,cls}]，按源码顺序且互不重叠；未覆盖的字符是普通文本 */
@@ -73,15 +87,20 @@
         var e = i + 1;
         while (e < n && isWord(src.charCodeAt(e))) e++;
         var w = src.slice(i, e), low = w.toLowerCase();
-        var cls = KW[low] ? 'kw' : (w.charCodeAt(0) === 36 ? 'vr' : null);
+        var cls = null;
+        if (KW[low]) cls = CONTROL[low] ? 'kc' : (LOGICAL[low] ? 'ko' : 'kf');
+        else if (CONST[low]) cls = 'cn';
+        else if (w.charCodeAt(0) === 36) cls = 'vr';
+        else if (w.charCodeAt(0) === 35) cls = 'lc';
         if (cls) toks.push({ s: i, e: e, cls: cls });
         i = e; lineStart = false;
         continue;
       }
-      if (OPS.indexOf(src[i]) >= 0) {                  // 运算符
+      if (OPS.indexOf(src[i]) >= 0) {                  // 运算符（按类别连续合并）
+        var ocls = opClass(src[i]);
         var p = i + 1;
-        while (p < n && OPS.indexOf(src[p]) >= 0) p++;
-        toks.push({ s: i, e: p, cls: 'op' });
+        while (p < n && OPS.indexOf(src[p]) >= 0 && opClass(src[p]) === ocls) p++;
+        toks.push({ s: i, e: p, cls: ocls });
         i = p; lineStart = false;
         continue;
       }

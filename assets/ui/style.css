@@ -151,13 +151,20 @@ pre.hl code{display:block;min-height:100%}
 #edit-code.wrap{white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word;overflow-x:hidden}
 pre.hl.wrap{white-space:pre-wrap;overflow-wrap:break-word;word-break:break-word}
 
-/* 语法着色（浅色主题） */
-pre.hl .cm{color:#9AA5B5;font-style:italic}
+/* 语法着色（浅色主题）：按控制流 / 命令 / 逻辑 / 变量 / 位置 / 字面量分组 */
+pre.hl .cm{color:#8B95A7;font-style:italic}
+pre.hl .kc{color:#7C3AED;font-weight:700}
+pre.hl .kf{color:#B45309;font-weight:600}
+pre.hl .ko{color:#BE123C;font-weight:700}
 pre.hl .kw{color:#A15C00;font-weight:700}
-pre.hl .st{color:#B02A00}
+pre.hl .st{color:#047857}
 pre.hl .nu{color:#1D4ED8}
-pre.hl .vr{color:#6D28D9}
-pre.hl .op{color:#5B6472}
+pre.hl .vr{color:#9F1239}
+pre.hl .lc{color:#0F766E;font-weight:600}
+pre.hl .cn{color:#A21CAF;font-weight:600}
+pre.hl .oc{color:#DC2626;font-weight:600}
+pre.hl .oa{color:#D97706}
+pre.hl .op{color:#64748B}
 
 /* 底栏 */
 .editor-foot{

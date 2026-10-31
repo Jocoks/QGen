@@ -55,7 +55,7 @@ import java.util.concurrent.TimeUnit;
  */
 public class MainActivity extends Activity {
 
-    public static final String VERSION_NAME = "1.4.0";
+    public static final String VERSION_NAME = "1.4.1";
 
     /** 优先读系统里的 versionName，避免和常量不一致 */
     private String versionName() {

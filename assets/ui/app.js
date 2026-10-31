@@ -1032,7 +1032,6 @@
     $('editor-info').textContent = '代码 ' + (loc.code || '').length + ' 字';
   }
 
-  var HL_LIMIT = 250000;      // 超过这个长度不做高亮（保证输入不卡）
   var hlTimer = null;
 
   function applyHighlightMode() {
@@ -1056,13 +1055,12 @@
     var ta = $('edit-code');
     var body = $('hl-code-body');
     var src = ta.value;
-    if (src.length > HL_LIMIT) {
-      body.textContent = src;
-      if (!S._hlOff) { toast('代码超过 ' + Math.round(HL_LIMIT / 1000) + 'K 字符，已关闭语法高亮'); S._hlOff = true; }
-    } else {
-      if (S._hlOff) S._hlOff = false;
-      var marks = (S.find.open && S.find.marks.length) ? S.find.marks : null;
+    var marks = (S.find.open && S.find.marks.length) ? S.find.marks : null;
+    try {
       body.innerHTML = QSPHL.highlight(src, marks);
+    } catch (e) {
+      // 极端情况下退回纯文本，至少不让编辑区变空
+      body.textContent = src;
     }
     renderGutterLines(src);
     syncView();
@@ -1078,7 +1076,6 @@
     if (S.codeWrap) return;
     var n = 1;
     for (var i = 0; i < src.length; i++) if (src.charCodeAt(i) === 10) n++;
-    if (n > 5000) { gutter.textContent = ''; return; }
     var parts = new Array(n);
     for (var k = 0; k < n; k++) parts[k] = k + 1;
     gutter.textContent = parts.join('\n');
