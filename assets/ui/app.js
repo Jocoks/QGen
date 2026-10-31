@@ -219,7 +219,7 @@
   /* ------------------------------------------------------------------ */
 
   function currentVersion() {
-    try { return (Native.appInfo() || {}).version || '1.3.11'; } catch (e) { return '1.3.11'; }
+    try { return (Native.appInfo() || {}).version || '1.3.12'; } catch (e) { return '1.3.12'; }
   }
 
   /**
@@ -1022,6 +1022,7 @@
     applyCodeStyle(true);
     renderGutterLines($('edit-code').value);
     syncView();
+    if (S.find.open && S.find.idx >= 0) gotoMatch(S.find.idx);
     toast('行距 ' + Math.round(S.codeLH * 100) + '%');
   }
 
@@ -1097,6 +1098,7 @@
     applyCodeStyle(true);
     renderGutterLines($('edit-code').value);
     syncView();
+    if (S.find.open && S.find.idx >= 0) gotoMatch(S.find.idx);
     toast('代码字号 ' + S.codeSize + 'px');
   }
 
@@ -1154,20 +1156,25 @@
     for (var k = 0; k < S.find.marks.length; k++) S.find.marks[k].cur = (k === i);
     updateHighlight();
     var ta = $('edit-code');
+    var pre = $('hl-code');
     try { ta.setSelectionRange(m.s, m.e); } catch (e) { }
-    var before = ta.value.slice(0, m.s);
-    var line = 0;
-    for (var p = 0; p < before.length; p++) if (before.charCodeAt(p) === 10) line++;
-    var lh = Math.round(S.codeSize * S.codeLH);
-    var center;
-    if (S.codeWrap) {
-      // 自动换行时逻辑行高不等于视觉行高，按字符位置比例估算
-      center = (m.s / Math.max(1, ta.value.length)) * ta.scrollHeight -
-        Math.floor(ta.clientHeight / 2);
+    // 直接量当前命中元素的实际像素位置：字号、行距、捏合缩放、自动换行都不用再猜行高
+    var cm = document.querySelector('#hl-code-body mark.fc');
+    if (cm && pre && !pre.hidden) {
+      var pr = pre.getBoundingClientRect();
+      var cr = cm.getBoundingClientRect();
+      var top = (cr.top - pr.top) + pre.scrollTop;
+      var left = (cr.left - pr.left) + pre.scrollLeft;
+      ta.scrollTop = Math.max(0, top - Math.floor(ta.clientHeight / 2) + Math.floor(cr.height / 2));
+      if (!S.codeWrap) ta.scrollLeft = Math.max(0, left - Math.floor(ta.clientWidth / 3));
     } else {
-      center = line * lh - Math.floor(ta.clientHeight / 2) + lh;
+      // 高亮层不可用时退回按逻辑行估算
+      var before = ta.value.slice(0, m.s);
+      var line = 0;
+      for (var p = 0; p < before.length; p++) if (before.charCodeAt(p) === 10) line++;
+      var lh = Math.round(S.codeSize * S.codeLH);
+      ta.scrollTop = Math.max(0, line * lh - Math.floor(ta.clientHeight / 2) + lh);
     }
-    ta.scrollTop = Math.max(0, center);
     syncView();
     $('find-count').textContent = (i + 1) + '/' + S.find.marks.length;
   }
@@ -1542,7 +1549,11 @@
 
     function end(e) {
       if (e.touches && e.touches.length) return;
-      if (pinch) { savePrefs(); renderGutterLines(ta.value); }
+      if (pinch) {
+        savePrefs();
+        renderGutterLines(ta.value);
+        if (S.find.open && S.find.idx >= 0) gotoMatch(S.find.idx);
+      }
       pan = null;
       pinch = null;
       syncView();
@@ -1623,6 +1634,7 @@
       applyCodeStyle();
       renderGutterLines($('edit-code').value);
       syncView();
+      if (S.find.open && S.find.idx >= 0) gotoMatch(S.find.idx);
       toast(S.codeWrap ? '自动换行：开（行号已隐藏）' : '自动换行：关');
     });
     $('btn-zoom-out').addEventListener('click', function () { setCodeSize(S.codeSize - 1); });
@@ -1690,7 +1702,7 @@
 
   function about() {
     var info = Native.appInfo() || {};
-    var ver = info.version || '1.3.11';
+    var ver = info.version || '1.3.12';
     showModal('关于 QGen Android', '' +
       '<h3>QGen Android ' + esc(ver) + '</h3>' +
       '<p>QSP 游戏（.qsp）编辑器，功能参考开源的 <b>QGen 4.3</b>（QSP Foundation）。</p>' +
