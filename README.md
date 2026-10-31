@@ -1,4 +1,4 @@
-# QGen Android 1.3.6
+# QGen Android 1.3.7
 
 **QSP 游戏（`.qsp`）编辑器 · 安卓版**
 
@@ -9,6 +9,9 @@
 已实测：用本 App 打开 8.6 MB 的 `jack.qsp`（194 个位置、约 421 万字符代码），**原样保存后与原文件 md5 完全一致**
 （`7b603abd9df2d71b9f2e0518ec021173`），即读写无损。
 
+> **1.3.7 变更**：新增 **TXT 工程导出 / 导入**。可以把当前 `.qsp` 拆成「每个位置一个 `.txt`」的工程，
+> 连同 `manifest.json` 打包成 `.zip`；也能把这种 `.zip` 还原成 `.qsp`（支持逐字节无损往返）。
+>
 > **1.3.6 变更**：编辑器只保留**代码页** —— 去掉了「描述」「动作」两个页签，点开位置就直接开始写代码。
 > 文件里原有的描述 / 动作数据仍按 QSP 格式完整解析与写回，**保存时不会被改动或丢弃**。
 
@@ -42,8 +45,10 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 | 未保存提示 | 标题 `●` / 底部「未保存」标记；退出、关闭、重新载入前都会确认 |
 | 竖屏 | 固定竖屏，不随重力旋转 |
 | 最近打开 | 记住最近 12 个文件（含持久读/写授权） |
+| **TXT 工程导出** | 把 `.qsp` 拆成每个位置一个 `.txt`，附 `manifest.json` / `README.txt`，打包成 `.zip` 保存 |
+| **TXT 工程导入** | 选择 `.zip` 还原成 `.qsp`；有 manifest 时完整恢复密码、描述、动作与文件头，无 manifest 时按文件名兼容导入 |
 
-**有意未实现**（见「已知限制」）：QGen 的文件夹（project .xml）结构、txt2gam 文本导入导出、
+**有意未实现**（见「已知限制」）：QGen 的文件夹（project .xml）结构、txt2gam 原生格式的完整兼容、
 内置 QSP 播放器（需另移植 qspcore）。
 
 ## 二、界面与配色
@@ -55,8 +60,9 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 
 ## 三、安装
 
-APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android-1.3.6.apk`
-（minSdk 26 / targetSdk 34，已用 debug 证书签名）。
+已发布 APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android-1.3.6.apk`
+（minSdk 26 / targetSdk 34，已用 debug 证书签名）。本文档对应的 1.3.7 为源码版本，
+需按第八节自行构建（或等待 Release 更新）。
 
 1. 把 APK 传到手机，点开安装；如提示「未知来源」，允许一次即可。
 2. 首次打开从「打开 .qsp 文件」开始。
@@ -73,8 +79,42 @@ APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android
    点右上角 🔍 在当前代码里查找，↑/↓ 跳到上一处/下一处。语法高亮随输入实时更新。
 4. **保存**：右上 `⋮` → 保存（写回原文件）；或「另存为…」。
 5. **搜索定位**：搜索框输入关键字 → 列表只剩命中的位置 → 点开编辑。
+6. **导出 TXT 工程**：右上 `⋮` →「📦 导出 TXT 工程（.zip）」→ 选保存位置，得到可解压编辑的 zip。
+7. **导入 TXT 工程**：右上 `⋮` →「📥 导入 TXT 工程（.zip）」→ 选 zip；确认未保存修改后导入，
+   再「另存为」成 `.qsp`。
 
-## 五、QSP 文件格式（实现依据）
+## 五、TXT 工程（.zip）
+
+「TXT 工程」是一个普通 zip，解压后结构如下：
+
+```
+manifest.json                 工程清单（格式、版本、游戏头、密码、每个位置的文件名/描述/动作）
+README.txt                    给人看的说明
+locations/0001_Start.txt      第 1 个位置的代码（UTF-8 纯文本）
+locations/0002_....txt        第 2 个位置的代码
+...
+```
+
+* **导出**：菜单 `⋮` →「📦 导出 TXT 工程（.zip）」。代码按位置拆成独立文本，描述与动作写进
+  `manifest.json`，所以再导入时不会丢数据；文件按序号命名，重名位置也不会互相覆盖。
+* **导入**：菜单 `⋮` →「📥 导入 TXT 工程（.zip）」，或首页「导入 TXT 工程」按钮。导入结果是
+  **未保存的新文档**，需要再「另存为」成 `.qsp`。
+* **兼容模式**：zip 里没有 `manifest.json` 时，所有非 `README.txt` 的 `.txt` 都会按文件名当作位置名
+  （会去掉 `001_` 这类序号前缀），内容当作代码；此时密码为默认 `No`，描述/动作为空。
+* 导出的 zip 使用 UTF-8 文件名与 DEFLATE 压缩；读取同时支持 STORE / DEFLATE，并校验 CRC32 与长度，
+  拒绝加密、ZIP64 和未知压缩方式。
+
+命令行验证（Node）：
+
+```bash
+$ node tools/test-txt-zip.js /path/to/jack.qsp
+  结果: 22 通过, 0 失败
+```
+
+实现见 `assets/ui/qsp-text.js`（工程清单与文本拆分）和 `assets/ui/zip.js`（纯 JS ZIP 读写），
+不依赖 Java 的 `java.util.zip`，因此浏览器演示模式与 Node 测试也能跑同一套代码。
+
+## 六、QSP 文件格式（实现依据）
 
 依据 `qgen/game.cpp`（QGen 4.3.0-b1）与实测 `jack.qsp` 反推，文件是 **UCS-2LE（UTF-16LE 码元）** 文本：
 
@@ -105,7 +145,7 @@ $ node tools/test-qsp.js /path/to/jack.qsp
   结果: 8 通过, 0 失败
 ```
 
-## 六、源码结构
+## 七、源码结构
 
 ```
 AndroidManifest.xml            竖屏锁定、SAF/VIEW 入口
@@ -115,16 +155,19 @@ assets/ui/style.css            浅色主题（白 + 黄）+ 移动端布局
 assets/ui/qsp.js               ★ QSP 格式读写核心（浏览器/Node 通用）
 assets/ui/syntax.js            QSP 语法高亮（纯函数，可 Node 测试）
 assets/ui/native.js            JS ↔ Java 桥接层（浏览器演示模式降级）
-assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存）
+assets/ui/zip.js              ★ 纯 JS ZIP 打包/解包（STORE/DEFLATE，CRC 校验）
+assets/ui/qsp-text.js         ★ TXT 工程清单与拆分/还原
+assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存/TXT 工程）
 mcp/server.js                  ★ MCP 本地服务（stdio，AI 可直接读写 .qsp）
 mcp/README.md                  MCP 工具文档
 mcp/selftest.js                MCP 自测脚本
 res/                          图标（自适应矢量）、主题、字符串
 build.sh                       设备内构建脚本
 tools/test-qsp.js              Node 端编解码测试
+tools/test-txt-zip.js          Node 端 TXT 工程 / ZIP 往返测试
 ```
 
-## 七、构建（在 Android 设备上直接构建，无需 Gradle）
+## 八、构建（在 Android 设备上直接构建，无需 Gradle）
 
 本仓库自带 `build.sh`，使用 Termux 环境里的 `aapt2` + `d8` + `apksigner` + JDK17：
 
@@ -142,7 +185,7 @@ export KEYSTORE=$HOME/.android/debug.keystore           # 签名证书
 
 `build.sh` 做四件事：`aapt2 compile/link` → `javac`（对 android.jar）→ `d8` → 打 dex + `apksigner`。
 
-## 八、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
+## 九、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
 
 `mcp/` 里附带一个 stdio MCP 服务，让 AI 直接查找/阅读/修改 `.qsp`：
 
@@ -169,15 +212,18 @@ APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 
 安全：写入前自动 `.bak` 备份、临时文件原子替换、写后重新解析校验、批量替换默认干跑。
 详见 [mcp/README.md](mcp/README.md)。
 
-## 九、已知限制
+## 十、已知限制
 
 * 只支持 **UCS-2 新版** `.qsp`（`QSPGAME` 头）。QGen 4 之前的旧 `.gam` 格式会提示不支持。
 * 不支持 QGen 的「文件夹」工程结构（`.xml` 工程文件），位置列表是平铺的。
 * 没有内置 QSP 运行时，所以**不能试玩**；纯编辑/保存。试玩可把 `.qsp` 交给 FastQSP / QSP 播放器。
-* 没有文本（txt2gam）导入导出。
+* 没有完整兼容 txt2gam 的原生格式；TXT 工程是本项目自己的 zip 约定（可通过 `manifest.json` 往返，
+  也可用无 manifest 的「每个位置一个 txt」兼容导入）。
+* TXT 工程导出需要浏览器/WebView 支持 `CompressionStream`；不支持时自动退化为不压缩的 STORE，
+  仍可正常导出，只是 zip 更大。导入 DEFLATE 工程需要 `DecompressionStream`（较新的 Android System WebView）。
 * 一次只打开一个文件；未做自动保存草稿。
 
-## 十、许可与致谢
+## 十一、许可与致谢
 
 * 本程序以 **GPLv2+** 发布，与 QGen 一致。
 * 文件格式实现参考 QGen 4.3（作者 Vladimir Bauer / Nex / Shchannikov Dmitry / Valeriy Argunov），

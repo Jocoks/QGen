@@ -57,6 +57,7 @@
     },
 
     pickOpen: function () { if (hasNative) QGenNative.pickOpen(); },
+    pickZip: function () { if (hasNative) QGenNative.pickZip(); },
     openRecent: function (uri) { if (hasNative) QGenNative.openRecent(uri); },
     recentFiles: function () {
       if (!hasNative) return [];
@@ -117,6 +118,46 @@
         Native.writeChunk(bytesToB64(u8.subarray(i, Math.min(i + CHUNK, u8.length))));
       }
       Native.endWrite();
+    },
+
+    /* ---------- TXT 工程 zip 的读取 / 写入（与 .qsp 的当前文档分开） ---------- */
+
+    readZipChunk: function (off, len) {
+      return hasNative ? QGenNative.readZipChunk(off, len) : '';
+    },
+
+    readZipAll: function (cb) {
+      if (!hasNative) { cb(new Uint8Array(0)); return; }
+      var CHUNK = 1 << 20;
+      var chunks = [];
+      function step(off) {
+        var b64 = Native.readZipChunk(off, CHUNK);
+        if (!b64) { done(); return; }
+        var bytes = b64ToBytes(b64);
+        chunks.push(bytes);
+        if (bytes.length < CHUNK) { done(); return; }
+        setTimeout(function () { step(off + bytes.length); }, 0);
+      }
+      function done() {
+        var total = 0, i;
+        for (i = 0; i < chunks.length; i++) total += chunks[i].length;
+        var out = new Uint8Array(total);
+        var o = 0;
+        for (i = 0; i < chunks.length; i++) { out.set(chunks[i], o); o += chunks[i].length; }
+        cb(out);
+      }
+      step(0);
+    },
+
+    /* 把 zip 字节交给 Java：分块缓存，然后弹系统「另存为」 */
+    writeZip: function (u8, name) {
+      if (!hasNative) return;
+      QGenNative.beginZipWrite();
+      var CHUNK = 1 << 19;
+      for (var i = 0; i < u8.length; i += CHUNK) {
+        QGenNative.writeZipChunk(bytesToB64(u8.subarray(i, Math.min(i + CHUNK, u8.length))));
+      }
+      QGenNative.saveZip(name || 'qgen-txt.zip');
     }
   };
 
@@ -124,6 +165,7 @@
   if (!hasNative) {
     var demoBytes = null;
     var demoName = 'jack.qsp';
+    var demoZipBytes = null;
 
     global.qgenDemoLoad = function (bytes, name) {
       demoBytes = bytes;
@@ -151,6 +193,41 @@
     };
 
     Native.readAll = function (cb) { cb(demoBytes || new Uint8Array(0)); };
+
+    Native.pickZip = function () {
+      var inp = document.createElement('input');
+      inp.type = 'file';
+      inp.accept = '.zip,application/zip,application/x-zip-compressed,application/octet-stream';
+      inp.onchange = function () {
+        var f = inp.files && inp.files[0];
+        if (!f) { fire('onZipPicked', { ok: false, canceled: true }); return; }
+        var r = new FileReader();
+        r.onload = function () {
+          var u8 = new Uint8Array(r.result);
+          demoZipBytes = u8;
+          fire('onZipPicked', { ok: true, name: f.name, size: u8.length });
+        };
+        r.readAsArrayBuffer(f);
+      };
+      inp.click();
+    };
+
+    Native.readZipAll = function (cb) {
+      cb(demoZipBytes || new Uint8Array(0));
+    };
+
+    Native.writeZip = function (u8, name) {
+      try {
+        var blob = new Blob([u8], { type: 'application/zip' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name || 'qgen-txt.zip';
+        a.click();
+      } catch (e) { }
+      setTimeout(function () {
+        fire('onZipSaved', { ok: true, name: name || 'qgen-txt.zip', size: u8.length, demo: true });
+      }, 50);
+    };
     Native.writeAll = function (u8) {
       demoBytes = u8;
       // 演示模式下把结果下载出来

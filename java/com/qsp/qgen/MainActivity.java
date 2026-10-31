@@ -44,7 +44,7 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
 
-    public static final String VERSION_NAME = "1.3.6";
+    public static final String VERSION_NAME = "1.3.7";
 
     /** 优先读系统里的 versionName，避免和常量不一致 */
     private String versionName() {
@@ -58,6 +58,8 @@ public class MainActivity extends Activity {
     private static final int REQ_OPEN = 1001;
     private static final int REQ_SAVE = 1002;
     private static final int REQ_VIEW_OPEN = 1003;
+    private static final int REQ_ZIP_OPEN = 1004;
+    private static final int REQ_ZIP_SAVE = 1005;
 
     private WebView web;
     private final Bridge bridge = new Bridge();
@@ -71,6 +73,12 @@ public class MainActivity extends Activity {
     private Uri pendingUri = null;   // 页面还没加载完时先存着
     private ByteArrayOutputStream pendingWrite;
     private String pendingSaveName;  // 另存为时的建议名
+
+    /** TXT 工程 zip 的临时数据，与当前 .qsp 文档互不影响 */
+    private byte[] zipData;
+    private ByteArrayOutputStream pendingZip;
+    private byte[] pendingZipOut;
+    private String pendingZipName;
 
     private SharedPreferences prefs;
 
@@ -423,6 +431,75 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** 选择要导入的 TXT 工程 .zip */
+        @JavascriptInterface
+        public void pickZip() {
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("*/*");
+                    i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{
+                            "application/zip", "application/x-zip-compressed",
+                            "application/octet-stream", "text/plain"});
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                    try {
+                        startActivityForResult(i, REQ_ZIP_OPEN);
+                    } catch (Exception e) {
+                        toastMsg("没有可用的文件选择器");
+                    }
+                }
+            });
+        }
+
+        /** 读取 pickZip 选中的 zip 的一段（base64） */
+        @JavascriptInterface
+        public String readZipChunk(int offset, int len) {
+            if (zipData == null) return "";
+            int start = Math.max(0, Math.min(offset, zipData.length));
+            int end = Math.max(start, Math.min(start + len, zipData.length));
+            return Base64.encodeToString(zipData, start, end - start, Base64.NO_WRAP);
+        }
+
+        @JavascriptInterface
+        public void beginZipWrite() { pendingZip = new ByteArrayOutputStream(); }
+
+        @JavascriptInterface
+        public void writeZipChunk(String b64) {
+            if (pendingZip == null) pendingZip = new ByteArrayOutputStream();
+            byte[] b = Base64.decode(b64, Base64.DEFAULT);
+            pendingZip.write(b, 0, b.length);
+        }
+
+        /** 结束写入并弹出系统「另存为」，保存成功后回调 onZipSaved */
+        @JavascriptInterface
+        public void saveZip(final String suggestedName) {
+            final byte[] data = pendingZip == null ? new byte[0] : pendingZip.toByteArray();
+            pendingZip = null;
+            if (data.length == 0) { toastMsg("没有可保存的内容"); return; }
+            pendingZipOut = data;
+            pendingZipName = suggestedName == null ? "qgen-txt.zip" : suggestedName;
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("application/zip");
+                    i.putExtra(Intent.EXTRA_TITLE, pendingZipName);
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                    try {
+                        startActivityForResult(i, REQ_ZIP_SAVE);
+                    } catch (Exception e) {
+                        pendingZipOut = null;
+                        toastMsg("没有可用的文件选择器");
+                    }
+                }
+            });
+        }
+
         /** 仅允许访问本机回环的简单 GET（给「关于」里的 MCP 状态检测用） */
         @JavascriptInterface
         public String httpGet(String url) {
@@ -571,6 +648,11 @@ public class MainActivity extends Activity {
         if (resultCode != RESULT_OK || data == null || data.getData() == null) {
             if (requestCode == REQ_OPEN) callback("onFilePicked", ok(false).put("canceled", true));
             if (requestCode == REQ_SAVE) callback("onSaveAsPicked", ok(false).put("canceled", true));
+            if (requestCode == REQ_ZIP_OPEN) callback("onZipPicked", ok(false).put("canceled", true));
+            if (requestCode == REQ_ZIP_SAVE) {
+                pendingZipOut = null;
+                callback("onZipSaved", ok(false).put("canceled", true));
+            }
             return;
         }
         Uri uri = data.getData();
@@ -589,6 +671,32 @@ public class MainActivity extends Activity {
             fileUri = uri;
             fileName = queryName(uri);
             callback("onSaveAsPicked", ok(true).put("name", fileName));
+        } else if (requestCode == REQ_ZIP_OPEN) {
+            try {
+                getContentResolver().takePersistableUriPermission(uri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+            try {
+                zipData = readAllBytes(uri);
+                callback("onZipPicked", ok(true).put("name", queryName(uri))
+                        .put("size", zipData.length));
+            } catch (Exception e) {
+                zipData = null;
+                callback("onZipPicked", ok(false).put("message", "读取 ZIP 失败：" + e.getMessage()));
+            }
+        } else if (requestCode == REQ_ZIP_SAVE) {
+            byte[] out = pendingZipOut;
+            pendingZipOut = null;
+            if (out == null) {
+                callback("onZipSaved", ok(false).put("message", "没有待保存的数据"));
+                return;
+            }
+            try {
+                writeToUri(uri, out);
+                callback("onZipSaved", ok(true).put("name", queryName(uri)).put("size", out.length));
+            } catch (Exception e) {
+                callback("onZipSaved", ok(false).put("message", "保存 ZIP 失败：" + e.getMessage()));
+            }
         }
     }
 }

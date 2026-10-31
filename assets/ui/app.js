@@ -99,6 +99,20 @@
   /* 打开文件                                                            */
   /* ------------------------------------------------------------------ */
 
+  /** 把一个已解析的游戏装进界面（打开 qsp / 导入 TXT 工程共用） */
+  function adoptGame(game, file) {
+    S.game = game;
+    S.cur = -1;
+    S.query = '';
+    $('search').value = '';
+    $('search-clear').hidden = true;
+    S.file = file;
+    if (S.find.open) closeFind();
+    setDirty(!!file.dirty);
+    renderList();
+    show('list');
+  }
+
   function openFromBytes(bytes, name) {
     var game;
     try {
@@ -108,22 +122,14 @@
         [{ text: '好', primary: true }]);
       return;
     }
-    S.game = game;
-    S.cur = -1;
-    S.query = '';
-    $('search').value = '';
-    $('search-clear').hidden = true;
-    setDirty(false);
     var cf = Native.currentFile ? Native.currentFile() : {};
-    S.file = {
+    adoptGame(game, {
       name: name || (cf && cf.name) || '未命名.qsp',
       uri: (cf && cf.uri) || '',
       size: bytes.length,
       writable: cf && cf.writable !== false,
       path: (cf && cf.path) || ''
-    };
-    renderList();
-    show('list');
+    });
     toast('已打开 ' + S.file.name + '（' + game.locations.length + ' 个位置）');
   }
 
@@ -192,6 +198,117 @@
       Native.saveAs(name);
     });
   }
+
+  /* ------------------------------------------------------------------ */
+  /* TXT 工程（.zip）导入 / 导出                                          */
+  /* ------------------------------------------------------------------ */
+
+  function currentVersion() {
+    try { return (Native.appInfo() || {}).version || '1.3.7'; } catch (e) { return '1.3.7'; }
+  }
+
+  /**
+   * 导出：把当前游戏拆成 locations/*.txt + manifest.json，再打包为 .zip。
+   * 当前编辑中的内容（未保存的修改）也会包含进去。
+   */
+  function exportTxtProject() {
+    if (!S.game) { toast('请先打开一个 .qsp 文件'); return; }
+    if (S.busy) { toast('正在处理，请稍候'); return; }
+    S.busy = true;
+    var ver = currentVersion();
+    toast('正在拆分位置并打包…');
+    setTimeout(function () {
+      var proj;
+      try {
+        proj = QSPText.exportProject(S.game, { generator: 'QGen Android ' + ver });
+      } catch (e) {
+        S.busy = false;
+        toast('导出失败：' + (e.message || e));
+        return;
+      }
+      var lastPct = -10;
+      QSPZip.create(proj.files.map(function (f) {
+        return { name: f.name, data: f.text };
+      }), {
+        compress: true,
+        onProgress: function (done, total) {
+          var pct = total ? Math.floor(done * 100 / total) : 100;
+          if (pct >= lastPct + 10 || done === total) {
+            lastPct = pct;
+            toast('正在打包… ' + pct + '%');
+          }
+        }
+      }).then(function (u8) {
+        S.busy = false;
+        Native.writeZip(u8, QSPText.suggestArchiveName(S.file.name));
+        toast('打包完成（' + proj.files.length + ' 个文件），请选择保存位置');
+      }).catch(function (e) {
+        S.busy = false;
+        showModal('导出失败', '<h3>导出 TXT 工程失败</h3><p>' +
+          esc(e && e.message || e) + '</p>', [{ text: '好', primary: true }]);
+      });
+    }, 30);
+  }
+
+  /** 导入：选择一个 .zip，还原成游戏并进入位置列表（需要另存为 .qsp） */
+  function importTxtProject() {
+    if (S.busy) { toast('正在处理，请稍候'); return; }
+    var go = function () {
+      S.busy = true;
+      toast('请选择 TXT 工程 .zip');
+      Native.pickZip();
+    };
+    if (S.game && S.dirty) {
+      confirmModal('导入 TXT 工程', '当前文件有未保存的修改，导入后会丢弃，继续？', go, true);
+    } else {
+      go();
+    }
+  }
+
+  Native.on('onZipPicked', function (r) {
+    if (!r || !r.ok) {
+      S.busy = false;
+      if (!(r && r.canceled)) toast('选择 ZIP 失败：' + ((r && r.message) || '未知错误'));
+      return;
+    }
+    Native.readZipAll(function (bytes) {
+      var fail = function (e) {
+        S.busy = false;
+        showModal('导入失败', '<h3>无法导入 TXT 工程</h3><p>' +
+          esc(e && e.message || e) + '</p>', [{ text: '好', primary: true }]);
+      };
+      if (!bytes || !bytes.length) { fail(new Error('ZIP 文件为空')); return; }
+      QSPZip.read(bytes).then(function (entries) {
+        var files = [];
+        entries.forEach(function (en) {
+          if (/\/$/.test(en.name)) return;
+          if (!/\.(txt|json)$/i.test(en.name)) return;
+          files.push({ name: en.name, text: QSPZip.utf8Decode(en.data) });
+        });
+        if (!files.length) throw new Error('压缩包里没有 .txt 或 manifest.json');
+        var res = QSPText.importProject(files, { version: currentVersion() });
+        var name = QSPText.suggestQspName(r.name);
+        var qspSize = 0;
+        try { qspSize = QSP.serialize(res.game).length; } catch (e) { }
+        adoptGame(res.game, {
+          name: name,
+          uri: '',
+          size: qspSize,
+          writable: false,
+          path: '',
+          dirty: true
+        });
+        S.busy = false;
+        toast((res.fallback ? '已按兼容模式导入 ' : '已导入 ') +
+          res.game.locations.length + ' 个位置，请另存为 .qsp');
+      }).catch(fail);
+    });
+  });
+
+  Native.on('onZipSaved', function (r) {
+    if (r && r.ok) toast('TXT 工程已保存' + (r.name ? '：' + r.name : ''));
+    else if (!(r && r.canceled)) toast('保存 ZIP 失败：' + ((r && r.message) || '未知错误'));
+  });
 
   /* ------------------------------------------------------------------ */
   /* 位置列表                                                            */
@@ -661,6 +778,8 @@
     var items = [
       { ico: '💾', text: '保存', fn: doSave },
       { ico: '📄', text: '另存为…', fn: askSaveAs },
+      { ico: '📦', text: '导出 TXT 工程（.zip）', fn: exportTxtProject },
+      { ico: '📥', text: '导入 TXT 工程（.zip）', fn: importTxtProject },
       { ico: 'ℹ', text: '游戏信息', fn: showGameInfo }
     ];
     if (S.view === 'editor' && S.cur >= 0) {
@@ -863,6 +982,8 @@
       show('list');
       toast('已新建空游戏，保存时会询问位置');
     });
+    var btnImportZip = $('btn-import-zip');
+    if (btnImportZip) btnImportZip.addEventListener('click', importTxtProject);
     $('btn-back').addEventListener('click', function () { if (!window.qgenBack()) closeFile(); });
     $('btn-menu').addEventListener('click', openMenu);
     $('topbar').addEventListener('click', function (e) {
@@ -935,7 +1056,7 @@
 
   function about() {
     var info = Native.appInfo() || {};
-    var ver = info.version || '1.2.0';
+    var ver = info.version || '1.3.7';
     showModal('关于 QGen Android', '' +
       '<h3>QGen Android ' + esc(ver) + '</h3>' +
       '<p>QSP 游戏（.qsp）编辑器，功能参考开源的 <b>QGen 4.3</b>（QSP Foundation）。</p>' +
