@@ -24,7 +24,7 @@ aapt2 link -o build/app-unsigned.apk -I "$AJAR" --manifest AndroidManifest.xml \
 
 echo "[3/5] 编译 Java"
 find java build/gen -name '*.java' > build/sources.txt
-javac -source 8 -target 8 -bootclasspath "$AJAR" -d build/classes @build/sources.txt 2>build/javac.log || { cat build/javac.log; exit 1; }
+javac -encoding UTF-8 -source 8 -target 8 -bootclasspath "$AJAR" -d build/classes @build/sources.txt 2>build/javac.log || { cat build/javac.log; exit 1; }
 
 echo "[4/5] Dex"
 find build/classes -name '*.class' > build/classes.txt
@@ -40,7 +40,8 @@ with zipfile.ZipFile(dst,'a') as z:
     z.write('build/dex/classes.dex','classes.dex', compress_type=zipfile.ZIP_STORED)
 PY
 KS="$KEYSTORE"
+zipalign -f 4 build/app-unsigned2.apk build/app-aligned.apk
 java -jar "$JARS/apksigner.jar" sign --ks "$KS" --ks-pass "${KS_PASS:-pass:android}" --key-pass "${KS_PASS:-pass:android}" \
-  --v1-signing-enabled true --v2-signing-enabled true --out "$OUT" build/app-unsigned2.apk
+  --v1-signing-enabled true --v2-signing-enabled true --out "$OUT" build/app-aligned.apk
 java -jar "$JARS/apksigner.jar" verify "$OUT" >/dev/null && echo "  签名校验通过"
 ls -l "$OUT"
