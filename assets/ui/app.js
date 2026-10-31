@@ -21,7 +21,7 @@
     busy: false,
     records: {
       scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
-      active: null, table: null, q: ''
+      active: null, table: null, q: '', undo: []
     }
   };
 
@@ -451,7 +451,7 @@
   function resetRecords() {
     S.records = {
       scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
-      active: null, table: null, q: ''
+      active: null, table: null, q: '', undo: []
     };
     var list = $('rec-family-list');
     var panel = $('rec-table-panel');
@@ -591,6 +591,7 @@
     if (!d.manual || typeof d.manual !== 'object') d.manual = {};
     S.records.active = { family: fam, descriptor: d };
     S.records.q = '';
+    S.records.undo = [];
     $('rec-search').value = '';
     $('rec-search-clear').hidden = true;
     $('rec-search').placeholder = '筛选记录（id / 字段值）…';
@@ -598,6 +599,7 @@
     $('rec-table-panel').hidden = false;
     recBuildTable();
     renderRecordTable();
+    recUpdateUndoBtn();
     updateTitle();
   }
 
@@ -645,27 +647,37 @@
     });
     var html = '<table class="rec-table"><thead><tr><th>id</th>';
     t.columns.forEach(function (c) {
+      var canEdit = !c.readOnly && !(c.source && c.source.kind === 'literal');
       html += '<th>' + esc(c.label) + '<span class="rec-col-type">' + esc(c.type) +
-        (c.readOnly ? ' · 只读' : '') + '</span></th>';
+        (canEdit ? ' · 可改' : ' · 只读') + '</span></th>';
     });
     html += '</tr></thead><tbody>';
     rows.slice(0, REC_ROW_LIMIT).forEach(function (r) {
-      html += '<tr><td title="' + esc(r.id) + '">' + esc(r.id) + '</td>';
+      html += '<tr><td data-label="id" title="' + esc(r.id) + '">' + esc(r.id) + '</td>';
       t.columns.forEach(function (c) {
         var v = r.values[c.key];
         var fl = r.flags[c.key] || [];
-        var cls = ['rec-cell'];
-        if (c.type === 'code') cls.push('rec-code');
-        if (fl.indexOf('missing') >= 0 || (v === '' && c.source && c.source.kind === 'manual')) cls.push('rec-missing');
-        if (fl.indexOf('conflict') >= 0) cls.push('rec-conflict');
         var src = c.source || {};
         var isManual = src.kind === 'manual';
+        var missing = fl.indexOf('missing') >= 0;
+        var conflict = fl.indexOf('conflict') >= 0;
+        var editable = !isManual && !c.readOnly && !missing && !conflict &&
+          src.kind !== 'literal' && v !== '' && !!r.sources[c.key];
+        var cls = ['rec-cell'];
+        if (c.type === 'code') cls.push('rec-code');
+        if (missing) cls.push('rec-missing');
+        if (conflict) cls.push('rec-conflict');
         if (isManual) cls.push('rec-manual');
-        html += '<td class="' + cls.join(' ') + '"' +
-          (isManual ? ' data-id="' + esc(r.id) + '" data-name="' + esc(src.name) + '"' : '') +
-          ' title="' + esc(recCellText(v)) + '">' +
+        if (editable) cls.push('rec-editable');
+        var attrs = ' data-label="' + esc(c.label) + '" data-id="' + esc(r.id) +
+          '" data-field="' + esc(c.key) + '"';
+        if (isManual) attrs += ' data-name="' + esc(src.name) + '"';
+        var hint = isManual ? '点击填写人工标记' : (editable ? '点击修改' : '');
+        html += '<td class="' + cls.join(' ') + '"' + attrs +
+          ' title="' + esc(recCellText(v) + (hint ? '\n' + hint : '')) + '">' +
+          '<span class="rec-val">' +
           (v === '' ? '<span class="rec-missing">—</span>' : esc(recCellText(v))) +
-          '</td>';
+          '</span></td>';
       });
       html += '</tr>';
     });
@@ -675,8 +687,9 @@
     var msg = rows.length + ' / ' + t.rows.length + ' 条记录 · ' + t.columns.length + ' 列';
     if (rows.length > REC_ROW_LIMIT) msg += '（仅显示前 ' + REC_ROW_LIMIT + ' 条）';
     var warn = t.warnings && t.warnings.length ? ' · ' + t.warnings.length + ' 条字段警告' : '';
-    $('rec-count').textContent = msg + warn;
+    $('rec-count').textContent = msg + warn + ' · 点单元格可修改';
     $('rec-empty').hidden = rows.length > 0;
+    recUpdateUndoBtn();
   }
 
   function recFilter(q) {
@@ -762,6 +775,7 @@
         var n = 1;
         while (d.fields.some(function (f) { return f.key === key; })) key = 'f' + (d.fields.length + 1) + '_' + (n++);
         var type = $('rf-type').value;
+        if (kind === 'block') type = 'code';
         if (kind === 'literal' && type === 'number' && source.value !== '' && !isNaN(Number(source.value))) {
           source.value = Number(source.value);
         }
@@ -779,21 +793,87 @@
     recFieldFormToggle();
   }
 
+  function recUpdateUndoBtn() {
+    var b = $('btn-rec-undo');
+    if (b) b.disabled = !(S.records.undo && S.records.undo.length);
+  }
+
+  function recUndo() {
+    var stack = S.records.undo || [];
+    var edit = stack.pop();
+    if (!edit) return;
+    var res = QSPRecords.undoValue(S.game, edit);
+    if (!res.ok) {
+      stack.push(edit);
+      toast('撤销失败：' + (res.error || '内容已变化'));
+      return;
+    }
+    setDirty(!!edit.wasDirty);
+    recBuildTable();
+    renderRecordTable();
+    recUpdateUndoBtn();
+    toast('已撤销上一步修改');
+  }
+
+  function recEditCell(td) {
+    var t = S.records.table, a = S.records.active;
+    if (!t || !t.ok || !a) return;
+    var id = td.dataset.id, key = td.dataset.field;
+    var c = null, r = null, i;
+    for (i = 0; i < t.columns.length; i++) if (t.columns[i].key === key) { c = t.columns[i]; break; }
+    for (i = 0; i < t.rows.length; i++) if (t.rows[i].id === id) { r = t.rows[i]; break; }
+    if (!c || !r) return;
+    var fl = r.flags[key] || [];
+    if (fl.indexOf('conflict') >= 0) { toast('这一列存在冲突值，暂不支持直接改'); return; }
+    if (fl.indexOf('missing') >= 0 || !r.sources[key]) { toast('该记录没有这一项，无法直接修改'); return; }
+    var src = c.source || {};
+    var old = r.values[key];
+    var multiline = c.type === 'code' || src.kind === 'block' || String(old).length > 70;
+    editFieldModal('修改 ' + c.label,
+      id + ' · 只改当前这一条，保存文件后生效',
+      old, multiline, function (v) {
+        if (String(v) === String(old)) return;
+        var target = {
+          location: r.sources[key].location,
+          start: r.sources[key].start,
+          end: r.sources[key].end,
+          source: c.source,
+          type: c.type
+        };
+        var res;
+        try { res = QSPRecords.updateValue(S.game, target, v); }
+        catch (e) { toast('修改失败：' + (e && e.message || e)); return; }
+        if (!res.ok) { toast('修改失败：' + (res.error || '未知错误')); return; }
+        if (!res.edit) return;
+        res.edit.wasDirty = S.dirty;
+        S.records.undo.push(res.edit);
+        setDirty(true);
+        recBuildTable();
+        renderRecordTable();
+        recUpdateUndoBtn();
+        toast('已修改 ' + c.label + ' · ' + id);
+      });
+  }
+
   function recTableClick(e) {
-    var td = e.target.closest('td.rec-manual');
+    var td = e.target.closest('td');
     if (!td) return;
-    var id = td.dataset.id, name = td.dataset.name;
-    var a = S.records.active;
-    if (!a) return;
-    var bucket = (a.descriptor.manual && a.descriptor.manual[name]) || {};
-    promptModal('人工标记', id + ' · ' + name, bucket[id] || '', function (v) {
-      a.descriptor.manual = a.descriptor.manual || {};
-      a.descriptor.manual[name] = a.descriptor.manual[name] || {};
-      a.descriptor.manual[name][id] = v;
-      recSaveDescriptor(a.descriptor);
-      recBuildTable();
-      renderRecordTable();
-    });
+    if (td.classList.contains('rec-manual')) {
+      var id = td.dataset.id, name = td.dataset.name;
+      var a = S.records.active;
+      if (!a) return;
+      var bucket = (a.descriptor.manual && a.descriptor.manual[name]) || {};
+      promptModal('人工标记', id + ' · ' + name, bucket[id] || '', function (v) {
+        a.descriptor.manual = a.descriptor.manual || {};
+        a.descriptor.manual[name] = a.descriptor.manual[name] || {};
+        a.descriptor.manual[name][id] = v;
+        recSaveDescriptor(a.descriptor);
+        recBuildTable();
+        renderRecordTable();
+      });
+      return;
+    }
+    if (td.classList.contains('rec-editable')) recEditCell(td);
   }
 
   Native.on('onTextSaved', function (r) {
@@ -1132,7 +1212,24 @@
     var inp = document.getElementById('modal-input');
     inp.focus();
     inp.select();
-    inp.addEventListener('keydown', function (e) { if (e.key === 'Enter') cb(inp.value); });
+    inp.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') { closeModal(); cb(inp.value); }
+    });
+  }
+
+  /** 文本/代码编辑弹窗：文本用单行，代码或长文本用多行 */
+  function editFieldModal(title, hint, value, multiline, cb) {
+    var box = showModal(title,
+      '<h3>' + esc(title) + '</h3>' +
+      (hint ? '<div class="hint">' + esc(hint) + '</div>' : '') +
+      '<textarea class="field" id="modal-input" rows="' + (multiline ? 7 : 2) + '"></textarea>',
+      [{ text: '取消' }, { text: '确定', primary: true, fn: function () {
+        cb(document.getElementById('modal-input').value);
+      } }]);
+    var ta = document.getElementById('modal-input');
+    ta.value = value == null ? '' : String(value);
+    ta.focus();
+    if (!multiline) ta.select();
   }
 
   function confirmModal(title, msg, cb, danger) {
@@ -1152,7 +1249,7 @@
       { ico: '📄', text: '另存为…', fn: askSaveAs },
       { ico: '📦', text: '导出 TXT 工程（.zip）', fn: exportTxtProject },
       { ico: '📥', text: '导入 TXT 工程（.zip）', fn: importTxtProject },
-      { ico: '🧾', text: '记录表（批量查看）', fn: openRecords },
+      { ico: '🧾', text: '记录表（查看/修改）', fn: openRecords },
       { ico: 'ℹ', text: '游戏信息', fn: showGameInfo }
     ];
     if (S.view === 'records') {
@@ -1399,6 +1496,7 @@
     $('btn-rec-csv').addEventListener('click', recExportCSV);
     $('btn-rec-back').addEventListener('click', recBack);
     $('btn-rec-add-field').addEventListener('click', recAddField);
+    $('btn-rec-undo').addEventListener('click', recUndo);
     $('rec-family-list').addEventListener('click', function (e) {
       var card = e.target.closest('[data-fam]');
       if (card) openFamily(card.dataset.fam);

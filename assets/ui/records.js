@@ -783,6 +783,176 @@
     };
   }
 
+
+  /* ------------------------------------------------------------------ */
+  /* 编辑（只改命中的一条语句，不重写整段代码）                           */
+  /* ------------------------------------------------------------------ */
+
+  function escapeQspString(v) {
+    return "'" + String(v == null ? '' : v).replace(/'/g, "''") + "'";
+  }
+
+  function encodeValue(value, type) {
+    if (type === 'number') {
+      var n = Number(value);
+      if (value === '' || !isFinite(n)) throw new Error('请输入有效数字');
+      return String(n);
+    }
+    if (type === 'boolean') {
+      var s = String(value).toLowerCase();
+      if (s === '1' || s === 'true' || s === '是') return '1';
+      if (s === '0' || s === 'false' || s === '否') return '0';
+      throw new Error('布尔值请填 1/0 或 是/否');
+    }
+    if (type === 'code') return String(value == null ? '' : value);
+    return escapeQspString(value);
+  }
+
+  /** 找 dynamic 调用里第 index 个参数（1 起，含主键）的字符范围 */
+  function helperArgRange(text, index) {
+    var n = text.length, i, quote = false, comment = false;
+    var brace = 0, brack = 0, paren = 0;
+    var commas = [];
+    var commentAt = n;
+    for (i = 0; i < n; i++) {
+      var c = text.charAt(i);
+      if (comment) { if (c === '\n') { comment = false; commentAt = i; break; } continue; }
+      if (quote) {
+        if (c === "'") {
+          if (text.charAt(i + 1) === "'") i++;
+          else quote = false;
+        }
+        continue;
+      }
+      if (c === "'") { quote = true; continue; }
+      if (c === '!') { comment = true; commentAt = i; continue; }
+      if (c === '{') { brace++; continue; }
+      if (c === '}') { if (brace > 0) brace--; continue; }
+      if (c === '[') { brack++; continue; }
+      if (c === ']') { if (brack > 0) brack--; continue; }
+      if (c === '(') { paren++; continue; }
+      if (c === ')') { if (paren > 0) paren--; continue; }
+      if (brace === 0 && brack === 0 && paren === 0 && c === ',') commas.push(i);
+    }
+    if (commas.length < index) return null;
+    var start = commas[index - 1] + 1;
+    var end = index < commas.length ? commas[index] : Math.min(n, commentAt);
+    while (start < end && /\s/.test(text.charAt(start))) start++;
+    while (end > start && /\s/.test(text.charAt(end - 1))) end--;
+    return { start: start, end: end };
+  }
+
+  /** 找顶层赋值号右侧，返回 [rhsStart, rhsEnd)，保留行尾注释 */
+  function assignRhsRange(text) {
+    var n = text.length, i, quote = false, comment = false;
+    var brace = 0, brack = 0, paren = 0;
+    for (i = 0; i < n; i++) {
+      var c = text.charAt(i);
+      if (comment) { if (c === '\n') comment = false; continue; }
+      if (quote) {
+        if (c === "'") {
+          if (text.charAt(i + 1) === "'") i++;
+          else quote = false;
+        }
+        continue;
+      }
+      if (c === "'") { quote = true; continue; }
+      if (c === '!') { comment = true; continue; }
+      if (c === '{') { brace++; continue; }
+      if (c === '}') { if (brace > 0) brace--; continue; }
+      if (c === '[') { brack++; continue; }
+      if (c === ']') { if (brack > 0) brack--; continue; }
+      if (c === '(') { paren++; continue; }
+      if (c === ')') { if (paren > 0) paren--; continue; }
+      if (brace === 0 && brack === 0 && paren === 0 && c === '=') {
+        var prev = text.charAt(i - 1), next = text.charAt(i + 1);
+        if (next === '=' || '+-*/<>!='.indexOf(prev) >= 0) continue;
+        var start = i + 1, end = n;
+        // 行尾注释不算 RHS
+        var q2 = false;
+        for (var j = start; j < n; j++) {
+          var d = text.charAt(j);
+          if (q2) {
+            if (d === "'") {
+              if (text.charAt(j + 1) === "'") j++;
+              else q2 = false;
+            }
+            continue;
+          }
+          if (d === "'") { q2 = true; continue; }
+          if (d === '!') { end = j; break; }
+        }
+        return { start: start, end: end };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 修改一条记录的一个字段。
+   * target: { location, start, end, source, type }
+   * 返回 { ok, game, edit:{before,after,start,end,location} } 或 { ok:false, error }
+   */
+  function updateValue(game, target, newValue) {
+    if (!game || !target || !target.source) return { ok: false, error: '缺少目标' };
+    var loc = null;
+    for (var i = 0; i < game.locations.length; i++) {
+      if (game.locations[i].name === target.location) { loc = game.locations[i]; break; }
+    }
+    if (!loc) return { ok: false, error: '找不到位置：' + target.location };
+    var code = loc.code || '';
+    var start = target.start, end = target.end;
+    if (!(start >= 0) || !(end > start) || end > code.length) return { ok: false, error: '位置已失效，请重新打开记录族' };
+    var stmt = code.slice(start, end);
+    var p = parseStatement(stmt, target.location);
+    if (!p) return { ok: false, error: '无法解析目标语句，可能已被修改' };
+    var src = target.source;
+    var encoded;
+    try { encoded = encodeValue(newValue, target.type); }
+    catch (e) { return { ok: false, error: e.message }; }
+
+    var out;
+    if (src.kind === 'helperArg') {
+      if (p.kind !== 'helper' || p.helper !== src.helper) return { ok: false, error: '语句类型已变化' };
+      var r = helperArgRange(stmt, src.arg);
+      if (!r) return { ok: false, error: '找不到第 ' + src.arg + ' 个参数' };
+      out = stmt.slice(0, r.start) + encoded + stmt.slice(r.end);
+    } else if (src.kind === 'array' || src.kind === 'block') {
+      if (p.kind !== 'array' || p.base !== src.name) return { ok: false, error: '语句类型已变化' };
+      if (p.op !== '=') return { ok: false, error: '该字段使用 ' + p.op + '，不支持直接编辑' };
+      var a = assignRhsRange(stmt);
+      if (!a) return { ok: false, error: '找不到赋值号' };
+      out = stmt.slice(0, a.start) + ' ' + encoded + stmt.slice(a.end);
+      if ((src.kind === 'block' || /^\s*\{/.test(p.rhs)) && !/^\s*\{/.test(encoded)) {
+        return { ok: false, error: '这是代码块，内容必须以 { 开头' };
+      }
+    } else {
+      return { ok: false, error: '该来源不支持编辑' };
+    }
+    if (out === stmt) return { ok: true, game: game, edit: null };
+    loc.code = code.slice(0, start) + out + code.slice(end);
+    return {
+      ok: true,
+      game: game,
+      edit: { location: target.location, start: start, end: start + out.length, before: stmt, after: out }
+    };
+  }
+
+  /** 撤销一次 updateValue（只能按后进先出顺序） */
+  function undoValue(game, edit) {
+    if (!edit) return { ok: true, game: game };
+    var loc = null;
+    for (var i = 0; i < game.locations.length; i++) {
+      if (game.locations[i].name === edit.location) { loc = game.locations[i]; break; }
+    }
+    if (!loc) return { ok: false, error: '找不到位置：' + edit.location };
+    var code = loc.code || '';
+    var cur = code.slice(edit.start, edit.end);
+    if (cur !== edit.after) return { ok: false, error: '内容已变化，无法撤销' };
+    loc.code = code.slice(0, edit.start) + edit.before + code.slice(edit.end);
+    return { ok: true, game: game };
+  }
+
   /* ------------------------------------------------------------------ */
   /* CSV                                                                 */
   /* ------------------------------------------------------------------ */
@@ -814,6 +984,8 @@
     validateDescriptor: validateDescriptor,
     addField: addField,
     removeField: removeField,
+    updateValue: updateValue,
+    undoValue: undoValue,
     tableToCSV: tableToCSV,
     // 暴露给测试/高级 UI
     _internals: {

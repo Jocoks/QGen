@@ -3,8 +3,8 @@
      格式处理逻辑参考 GPLv2+ 的 QGen (github.com/QSPFoundation/qgen)，本程序同样以 GPLv2+ 发布。 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.qsp.qgen"
-    android:versionCode="138"
-    android:versionName="1.3.8">
+    android:versionCode="139"
+    android:versionName="1.3.9">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />

@@ -126,5 +126,72 @@ ok('CSV escapes comma and quote', function () {
   truth(csv.indexOf('"待定, ""重点"""') >= 0, 'escaped cell');
 });
 
+ok('edit helper argument and undo byte-for-byte', function () {
+  var before = Buffer.from(QSP.serialize(game)).toString('base64');
+  var row = itemTable.rows.filter(function (r) { return r.id === 'man_rugs'; })[0];
+  var col = itemTable.columns.filter(function (c) { return c.key === 'ib_cycle_arg2'; })[0];
+  truth(row && col && row.sources[col.key], 'source missing');
+  var target = {
+    location: row.sources[col.key].location,
+    start: row.sources[col.key].start,
+    end: row.sources[col.key].end,
+    source: col.source,
+    type: col.type
+  };
+  var res = R.updateValue(game, target, '改名测试');
+  truth(res.ok, res.error || 'update failed');
+  truth(res.edit && res.edit.after.indexOf("'改名测试'") >= 0, 'new literal missing');
+  var again = R.buildTable(game, itemFam.descriptor);
+  var nr = again.rows.filter(function (r) { return r.id === 'man_rugs'; })[0];
+  eq(nr.values.ib_cycle_arg2, '改名测试', 'updated value');
+  var undo = R.undoValue(game, res.edit);
+  truth(undo.ok, undo.error || 'undo failed');
+  eq(Buffer.from(QSP.serialize(game)).toString('base64'), before, 'undo bytes');
+});
+
+ok('edit code block and undo', function () {
+  var row = mergedTable.rows.filter(function (r) { return r.id === 'man_rugs'; })[0];
+  var col = mergedTable.columns.filter(function (c) { return c.key === 'property'; })[0];
+  truth(row && col && row.sources[col.key], 'block source missing');
+  var old = row.values[col.key];
+  var target = {
+    location: row.sources[col.key].location,
+    start: row.sources[col.key].start,
+    end: row.sources[col.key].end,
+    source: col.source,
+    type: col.type
+  };
+  var res = R.updateValue(game, target, '{ x = 1 }');
+  truth(res.ok, res.error || 'block update failed');
+  truth(res.edit.after.indexOf('{ x = 1 }') >= 0, 'block rhs');
+  R.undoValue(game, res.edit);
+  eq(R.buildTable(game, merged).rows.filter(function (r) { return r.id === 'man_rugs'; })[0].values.property, old, 'block restored');
+});
+
+ok('edit array field and reject compound assignment', function () {
+  var g = {
+    locations: [{
+      name: 't', desc: '', code: "$name['a'] = 'x'\n$num['a'] += 1\ndynamic $h, 'a', 'old'"
+    }]
+  };
+  var d = {
+    version: 1, id: 't', label: 't',
+    scope: { locations: ['t'] },
+    records: { kind: 'keyed', sources: [{ kind: 'array', name: '$name' }] },
+    fields: [
+      { key: 'name', label: '名称', source: { kind: 'array', name: '$name' } },
+      { key: 'num', label: '数字', type: 'number', source: { kind: 'array', name: '$num' } }
+    ]
+  };
+  var t = R.buildTable(g, d);
+  truth(t.ok, (t.errors || []).join(';'));
+  var row = t.rows[0];
+  var nameRes = R.updateValue(g, Object.assign({ source: t.columns[0].source, type: 'text' }, row.sources.name), 'y');
+  truth(nameRes.ok, nameRes.error || 'array update failed');
+  truth(g.locations[0].code.indexOf("$name['a'] = 'y'") === 0, 'array literal');
+  var numRes = R.updateValue(g, Object.assign({ source: t.columns[1].source, type: 'number' }, row.sources.num), 2);
+  truth(!numRes.ok && /不支持直接编辑/.test(numRes.error), 'compound assignment should be rejected');
+});
+
 console.log('\n' + pass + ' passed, ' + fail + ' failed');
 process.exit(fail ? 1 : 0);
