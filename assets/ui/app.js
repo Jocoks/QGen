@@ -979,6 +979,17 @@
     applyHighlightMode();
     show('editor');
     updateEditorInfo();
+    // 切换位置后必须重建查找结果，否则 marks 仍指向上一个位置的偏移
+    if (S.find.open) {
+      if (S.find.q) {
+        runFind(S.find.q);
+      } else {
+        S.find.marks = [];
+        S.find.idx = -1;
+        updateHighlight();
+        $('find-count').textContent = '0/0';
+      }
+    }
   }
 
   function applyCodeStyle(save) {
