@@ -219,7 +219,7 @@
   /* ------------------------------------------------------------------ */
 
   function currentVersion() {
-    try { return (Native.appInfo() || {}).version || '1.3.7'; } catch (e) { return '1.3.7'; }
+    try { return (Native.appInfo() || {}).version || '1.3.11'; } catch (e) { return '1.3.11'; }
   }
 
   /**
@@ -1100,6 +1100,7 @@
     var inp = $('find-input');
     inp.value = S.find.q || '';
     inp.focus();
+    try { inp.select(); } catch (e) { }
     if (S.find.q) runFind(S.find.q);
     else { $('find-count').textContent = '0/0'; }
   }
@@ -1147,8 +1148,15 @@
     var line = 0;
     for (var p = 0; p < before.length; p++) if (before.charCodeAt(p) === 10) line++;
     var lh = Math.round(S.codeSize * S.codeLH);
-    var center = Math.max(0, line * lh - Math.floor(ta.clientHeight / 2) + lh);
-    ta.scrollTop = center;
+    var center;
+    if (S.codeWrap) {
+      // 自动换行时逻辑行高不等于视觉行高，按字符位置比例估算
+      center = (m.s / Math.max(1, ta.value.length)) * ta.scrollHeight -
+        Math.floor(ta.clientHeight / 2);
+    } else {
+      center = line * lh - Math.floor(ta.clientHeight / 2) + lh;
+    }
+    ta.scrollTop = Math.max(0, center);
     syncView();
     $('find-count').textContent = (i + 1) + '/' + S.find.marks.length;
   }
@@ -1620,13 +1628,37 @@
     $('find-next').addEventListener('click', function () { findStep(1); });
     var findInput = $('find-input');
     var findTimer = null;
-    findInput.addEventListener('input', function () {
-      var v = this.value;
+    function queueFind() {
+      var v = findInput.value;
       if (findTimer) clearTimeout(findTimer);
       findTimer = setTimeout(function () { runFind(v); }, 120);
+    }
+    findInput.addEventListener('input', function () {
+      $('find-count').textContent = '…';
+      queueFind();
+    });
+    // 中文等输入法组词时可能不触发 input；组词结束或内容确认后补搜一次
+    findInput.addEventListener('compositionend', function () {
+      if (findTimer) clearTimeout(findTimer);
+      var el = this;
+      setTimeout(function () { runFind(el.value); }, 0);
+    });
+    findInput.addEventListener('change', function () { runFind(this.value); });
+    findInput.addEventListener('search', function () { runFind(this.value); });
+    findInput.addEventListener('focus', function () {
+      if (this.value !== S.find.q) runFind(this.value);
     });
     findInput.addEventListener('keydown', function (ev) {
-      if (ev.key === 'Enter') { ev.preventDefault(); findStep(ev.shiftKey ? -1 : 1); }
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        // 输入法刚提交、input 还没执行时，先按输入框当前内容搜索，不能跳到旧结果
+        if (findInput.value !== S.find.q) {
+          if (findTimer) clearTimeout(findTimer);
+          runFind(findInput.value);
+          return;
+        }
+        findStep(ev.shiftKey ? -1 : 1);
+      }
       if (ev.key === 'Escape') closeFind();
     });
     bindGestures();
@@ -1647,7 +1679,7 @@
 
   function about() {
     var info = Native.appInfo() || {};
-    var ver = info.version || '1.3.7';
+    var ver = info.version || '1.3.11';
     showModal('关于 QGen Android', '' +
       '<h3>QGen Android ' + esc(ver) + '</h3>' +
       '<p>QSP 游戏（.qsp）编辑器，功能参考开源的 <b>QGen 4.3</b>（QSP Foundation）。</p>' +
