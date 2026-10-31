@@ -400,3 +400,7 @@ pre.hl mark.fc{background:#FFB300;color:#2A2000}
     overflow-wrap:anywhere;line-height:1.35;
   }
 }
+.mcp-addr-row{display:flex;gap:8px;align-items:center;margin:6px 0 8px}
+.mcp-addr-row input{flex:1;min-width:0;border:1px solid var(--line);border-radius:8px;background:#fff;color:var(--fg);padding:8px 10px;font-family:var(--mono);font-size:12px}
+.mcp-addr-row .text-btn{flex:none;white-space:nowrap}
+#mcp-files .text-btn{margin-left:6px}

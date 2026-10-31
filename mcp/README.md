@@ -1,5 +1,9 @@
 # qsp-mcp —— QGen Android 的本地 MCP 服务
 
+> **1.4.0 起 App 已内置 16 个工具的 MCP 服务**：打开 App 自动监听
+> `127.0.0.1:8790`，地址可在「关于」中一键复制，不需要再运行本目录的 Node 脚本。
+> 本文档保留给桌面/stdio 场景；内置工具的说明见根目录 README 第十节。
+
 让 AI（DeepSeek Harness / Claude 等支持 MCP 的客户端）直接**查找、阅读、修改** `.qsp` 游戏文件，
 不用打开 App、不用手工复制粘贴。
 

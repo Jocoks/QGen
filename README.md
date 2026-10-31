@@ -1,4 +1,4 @@
-# QGen Android 1.3.12
+# QGen Android 1.4.0
 
 **QSP 游戏（`.qsp`）编辑器 · 安卓版**
 
@@ -9,6 +9,8 @@
 已实测：用本 App 打开 8.6 MB 的 `jack.qsp`（194 个位置、约 421 万字符代码），**原样保存后与原文件 md5 完全一致**
 （`7b603abd9df2d71b9f2e0518ec021173`），即读写无损。
 
+> **1.4.0 变更**：MCP 服务改为 **App 内置**。打开 App 自动监听 `127.0.0.1:8790`，关于页地址可选中/一键复制，新增「重启服务」和「所有文件访问」授权入口；工具从 13 个扩到 16 个，新增记录表扫描、建表和批量改值。
+>
 > **1.3.12 变更**：查找定位改为按命中元素的真实像素位置计算，捏合缩放、A+/A− 调字号、行距和换行切换后都会重新居中，不再按估算行高定位。
 >
 > **1.3.11 变更**：修复代码页查找不定位/不高亮的问题（输入法组词、回车提前跳转、切换位置后旧结果未刷新、自动换行时滚动位置）。
@@ -33,10 +35,11 @@
 
 App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板，直接显示：
 
-- 地址：`http://127.0.0.1:8790/mcp`
-- 状态：● 运行中 / 未运行（App 会实时探测，没有服务进程也可以看）
-- 工具数：运行中时显示 13 个
-- 启动命令（长按可复制）与 APK 内置文件路径
+- 地址：`http://127.0.0.1:8790/mcp`（可点选，右侧「复制」一键复制）
+- 状态：● 运行中 / 未运行；打开 App 后自动启动，退出 App 即停止
+- 工具数：16 个
+- 「重启服务」按钮：端口被占用或热更新后手动重启；端口会从 8790 起自动顺延，面板显示实际端口
+- 「文件访问」：Android 11+ 需要授予「所有文件访问」才能让 MCP 读写共享目录
 
 ## 一、功能
 
@@ -74,7 +77,7 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 ## 三、安装
 
 已发布 APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android-1.3.6.apk`
-（minSdk 26 / targetSdk 34，已用 debug 证书签名）。本文档对应的 1.3.12 为源码版本，
+（minSdk 26 / targetSdk 34，已用 debug 证书签名）。本文档对应的 1.4.0 为源码版本，
 需按第九节自行构建（或等待 Release 更新）。
 
 1. 把 APK 传到手机，点开安装；如提示「未知来源」，允许一次即可。
@@ -202,7 +205,8 @@ $ node tools/test-qsp.js /path/to/jack.qsp
 
 ```
 AndroidManifest.xml            竖屏锁定、SAF/VIEW 入口
-java/com/qsp/qgen/MainActivity.java   唯一 Activity：WebView + JS 桥（文件读写、SAF、最近文件）
+java/com/qsp/qgen/MainActivity.java   唯一 Activity：WebView + JS 桥（文件读写、SAF、最近文件、MCP 调度）
+java/com/qsp/qgen/McpHttpServer.java  ★ 内置 MCP HTTP/JSON-RPC 服务（只监听 127.0.0.1）
 assets/ui/index.html           界面结构
 assets/ui/style.css            浅色主题（白 + 黄）+ 移动端布局
 assets/ui/qsp.js               ★ QSP 格式读写核心（浏览器/Node 通用）
@@ -211,8 +215,9 @@ assets/ui/native.js            JS ↔ Java 桥接层（浏览器演示模式降�
 assets/ui/zip.js              ★ 纯 JS ZIP 打包/解包（STORE/DEFLATE，CRC 校验）
 assets/ui/qsp-text.js         ★ TXT 工程清单与拆分/还原
 assets/ui/records.js          ★ 记录表：静态扫描、描述符、建表、CSV
+assets/ui/mcp.js              ★ App 内置 MCP 工具层（16 个工具，复用 qsp.js/records.js）
 assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存/TXT 工程/记录表）
-mcp/server.js                  ★ MCP 本地服务（stdio，AI 可直接读写 .qsp）
+mcp/server.js                  旧的 Node MCP 服务（桌面/stdio 用；App 已内置）
 mcp/README.md                  MCP 工具文档
 mcp/selftest.js                MCP 自测脚本
 res/                          图标（自适应矢量）、主题、字符串
@@ -220,6 +225,7 @@ build.sh                       设备内构建脚本
 tools/test-qsp.js              Node 端编解码测试
 tools/test-txt-zip.js          Node 端 TXT 工程 / ZIP 往返测试
 tools/test-records.js          Node 端记录表扫描/建表/人工列测试
+tools/test-mcp.js              Node 端 MCP 16 工具 / JSON-RPC / 批量改值测试
 ```
 
 ## 九、构建（在 Android 设备上直接构建，无需 Gradle）
@@ -240,32 +246,57 @@ export KEYSTORE=$HOME/.android/debug.keystore           # 签名证书
 
 `build.sh` 做四件事：`aapt2 compile/link` → `javac`（对 android.jar）→ `d8` → 打 dex + `apksigner`。
 
-## 十、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
+## 十、MCP 本地服务（App 内置，1.4.0 起）
 
-`mcp/` 里附带一个 stdio MCP 服务，让 AI 直接查找/阅读/修改 `.qsp`：
+打开 App 后，内置 HTTP 服务会自动监听 **`127.0.0.1:8790`**（如果端口被占用会顺延到 8791–8799，
+以「关于」面板显示的地址为准）。不需要 Node、不需要另外起进程，也不需要 adb。
 
-```bash
-# 1) 起 HTTP 服务（只监听 127.0.0.1:8790，端口可改）
-#    用 setsid/nohup 让它脱离当前会话，避免一起被回收
-setsid nohup sh <项目目录>/mcp/start-http.sh 8790 > ~/qsp-mcp.log 2>&1 < /dev/null &
+**复制地址**：首页底部「关于 / 许可」→ MCP 面板 → 点地址框选中，或点右侧「复制」。
+**重启服务**：同一面板的「重启服务」。
+**文件权限**：Android 11+ 首次使用 MCP 读写 `/storage/emulated/0/...` 前，点面板里的「去授权」，
+在系统设置中允许 QGen「所有文件访问」；否则只能读写 App 私有目录。
 
-# 2) 在 DeepSeek Harness 里注册（地址:端口 形式）
-mcp_hub_add name=qsp transport=streamable-http url=http://127.0.0.1:8790/mcp
+在 MCP 客户端里注册（Streamable HTTP）：
 
-# 或者用 stdio（由客户端拉起进程）：
-# mcp_hub_add name=qsp transport=stdio command=<node> args=["<项目目录>/mcp/server.js"]
+```text
+http://127.0.0.1:8790/mcp
 ```
 
-APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 `qsp.js` 编解码）：
-从 APK 里取出后 `node assets/mcp/server.js --http 8790` 即可起 HTTP 版，
-不带参数则走 stdio。
+如果客户端在电脑上，而手机通过 USB 连接，先做端口转发：
 
-13 个工具：`qsp_info` / `qsp_list_locations` / `qsp_get_location` / `qsp_search` /
-`qsp_set_location` / `qsp_replace` / `qsp_replace_all` / `qsp_add_location` /
-`qsp_rename_location` / `qsp_delete_location` / `qsp_action` / `qsp_create` / `qsp_validate`。
+```bash
+adb forward tcp:8790 tcp:8790
+```
 
-安全：写入前自动 `.bak` 备份、临时文件原子替换、写后重新解析校验、批量替换默认干跑。
-详见 [mcp/README.md](mcp/README.md)。
+然后电脑上的客户端仍然填 `http://127.0.0.1:8790/mcp`。
+
+### 工具（16 个）
+
+| 工具 | 用途 |
+|---|---|
+| `qsp_info` | 文件大小、位置数、动作数、代码/描述字数、密码、文件头 |
+| `qsp_list_locations` | 位置列表，可按名称过滤 |
+| `qsp_get_location` | 读一个位置的描述、代码、动作 |
+| `qsp_search` | 全文搜索名称/描述/代码/动作，返回命中片段（支持正则） |
+| `qsp_set_location` | 整体替换一个位置的描述/代码 |
+| `qsp_replace` | 单位置查找替换 |
+| `qsp_replace_all` | 全游戏批量替换（默认 dryRun） |
+| `qsp_add_location` / `qsp_rename_location` / `qsp_delete_location` | 位置增删改 |
+| `qsp_action` | 动作 list/get/set/delete |
+| `qsp_create` / `qsp_validate` | 新建空白游戏 / 校验文件 |
+| `qsp_records_scan` | 扫描记录族（物品/NPC/敌人…），返回记录数与字段数 |
+| `qsp_records_table` | 按记录族建表，返回列、行、缺失/冲突标记 |
+| `qsp_records_update` | 按「记录族 + id + 字段」批量改值，默认 dryRun |
+
+### 安全
+
+* 服务只绑定 `127.0.0.1`，不监听局域网；退出 App 即停止。
+* 写入前自动备份为 `.bak`，先写 `.qgen-tmp` 再原子替换；写后重新解析并校验位置数。
+* `qsp_set_location`、`qsp_replace_all`、`qsp_records_update` 默认 `dryRun: true`，确认返回结果后再传 `false`。
+* 记录表批量修改是「全有或全无」：任一条校验失败就整批不写，避免半套数据。
+* 地址没有额外 token，能访问本机回环的应用都可以调用；只在本机使用，不要转发到公网。
+
+旧的 `mcp/server.js` 仍保留在源码里，供桌面/Node 环境使用；App 不再依赖它。
 
 ## 十一、已知限制
 
@@ -279,6 +310,8 @@ APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 
 * 记录表只做静态聚合，不执行 QSP 逻辑；标量/代码块修改直接进入当前内存文件，保存后才落盘。
   人工列保存在本机 localStorage。
 * 一次只打开一个文件；未做自动保存草稿。
+* MCP 内置服务只在 App 进程存活时运行；被系统回收后重新打开 App 即可恢复。
+* Android 11+ 的「所有文件访问」需要用户手动授权，App 不会绕过系统权限。
 
 ## 十二、许可与致谢
 

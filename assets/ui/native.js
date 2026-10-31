@@ -164,7 +164,38 @@
     saveText: function (text, name) {
       if (!hasNative) return;
       QGenNative.saveText(text == null ? '' : String(text), name || 'qgen-records.csv');
-    }
+    },
+
+    /* ---------- 内置 MCP：本机文件分块 IO ---------- */
+    mcpServerInfo: function () {
+      if (!hasNative) return { ok: false, running: false, port: 0 };
+      try { return JSON.parse(QGenNative.mcpServerInfo() || '{}'); } catch (e) { return { ok: false, running: false }; }
+    },
+    mcpRestart: function () { if (hasNative) QGenNative.mcpRestart(); },
+    copyText: function (t) { if (hasNative) QGenNative.copyText(t); },
+    mcpFileStat: function (path) {
+      if (!hasNative) return { ok: false, error: '演示模式不支持本机路径' };
+      try { return JSON.parse(QGenNative.mcpFileStat(path) || '{}'); } catch (e) { return { ok: false, error: e.message }; }
+    },
+    mcpReadChunk: function (path, off, len) {
+      if (!hasNative) return { ok: false, error: '演示模式不支持本机路径' };
+      try { return JSON.parse(QGenNative.mcpReadChunk(path, off, len) || '{}'); } catch (e) { return { ok: false, error: e.message }; }
+    },
+    mcpWriteBegin: function (path) {
+      if (!hasNative) return { ok: false, error: '演示模式不支持本机路径' };
+      try { return JSON.parse(QGenNative.mcpWriteBegin(path) || '{}'); } catch (e) { return { ok: false, error: e.message }; }
+    },
+    mcpWriteChunk: function (b64) {
+      if (!hasNative) return { ok: false, error: '演示模式不支持本机路径' };
+      try { return JSON.parse(QGenNative.mcpWriteChunk(b64) || '{}'); } catch (e) { return { ok: false, error: e.message }; }
+    },
+    mcpWriteEnd: function () {
+      if (!hasNative) return { ok: false, error: '演示模式不支持本机路径' };
+      try { return JSON.parse(QGenNative.mcpWriteEnd() || '{}'); } catch (e) { return { ok: false, error: e.message }; }
+    },
+    mcpWriteAbort: function () { if (hasNative) QGenNative.mcpWriteAbort(); },
+    mcpHasAllFiles: function () { return hasNative ? !!QGenNative.mcpHasAllFiles() : false; },
+    mcpRequestAllFiles: function () { if (hasNative) QGenNative.mcpRequestAllFiles(); }
   };
 
   /* ---------- 浏览器演示模式 ---------- */

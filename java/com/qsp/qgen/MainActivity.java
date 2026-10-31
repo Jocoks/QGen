@@ -1,7 +1,10 @@
 package com.qsp.qgen;
 
 import android.app.Activity;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
+import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.database.Cursor;
@@ -9,7 +12,9 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.provider.OpenableColumns;
+import android.provider.Settings;
 import android.util.Base64;
 import android.view.View;
 import android.view.Window;
@@ -24,16 +29,22 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.io.RandomAccessFile;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * QGen Android —— 唯一 Activity：一个全屏 WebView 承载编辑器界面，
@@ -44,7 +55,7 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
 
-    public static final String VERSION_NAME = "1.3.12";
+    public static final String VERSION_NAME = "1.4.0";
 
     /** 优先读系统里的 versionName，避免和常量不一致 */
     private String versionName() {
@@ -87,6 +98,22 @@ public class MainActivity extends Activity {
 
     private SharedPreferences prefs;
 
+    /** 内嵌 MCP 服务 */
+    private McpHttpServer mcpServer;
+    private final Map<String, RpcWaiter> rpcWaiters = new ConcurrentHashMap<String, RpcWaiter>();
+    private final java.util.concurrent.atomic.AtomicLong rpcSeq = new java.util.concurrent.atomic.AtomicLong();
+    private File mcpTmp;
+    private File mcpTarget;
+    private OutputStream mcpOut;
+
+    /** 一次等待 WebView 返回的 JSON-RPC 调用 */
+    public class RpcWaiter {
+        public final String id;
+        public final CountDownLatch latch = new CountDownLatch(1);
+        public volatile String result;
+        public RpcWaiter(String id) { this.id = id; }
+    }
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
@@ -126,6 +153,7 @@ public class MainActivity extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 pageReady = true;
+                startMcp();
                 if (pendingUri != null) {
                     Uri u = pendingUri;
                     pendingUri = null;
@@ -148,6 +176,76 @@ public class MainActivity extends Activity {
 
         // 从外部“打开方式”进入
         handleIncomingIntent(getIntent());
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mcpServer != null) mcpServer.stop();
+        super.onDestroy();
+    }
+
+    private McpHttpServer.Host mcpHost() {
+        return new McpHttpServer.Host() {
+            @Override public boolean ready() { return pageReady; }
+            @Override public String rpc(String raw) { return mcpRpc(raw); }
+        };
+    }
+
+    private void startMcp() {
+        if (mcpServer == null) mcpServer = new McpHttpServer(mcpHost());
+        mcpServer.start();
+    }
+
+    public boolean isPageReady() { return pageReady; }
+
+    public RpcWaiter newRpcWaiter(String id) {
+        RpcWaiter w = new RpcWaiter(id);
+        rpcWaiters.put(id, w);
+        return w;
+    }
+
+    public void removeWaiter(String id) { rpcWaiters.remove(id); }
+
+    /** 在 UI 线程执行 JS，并把返回值交给等待者 */
+    public void evalJs(String js, final RpcWaiter waiter) {
+        web.evaluateJavascript(js, new android.webkit.ValueCallback<String>() {
+            @Override public void onReceiveValue(String value) {
+                String out = value;
+                if (value == null || "null".equals(value)) {
+                    out = null;
+                } else {
+                    try {
+                        Object v = new org.json.JSONTokener(value).nextValue();
+                        if (v instanceof String) out = (String) v;
+                    } catch (Exception ignored) { }
+                }
+                waiter.result = out;
+                rpcWaiters.remove(waiter.id);
+                waiter.latch.countDown();
+            }
+        });
+    }
+
+    /** 把一条 JSON-RPC 消息交给页面并同步等待结果（通知返回 null）。 */
+    public String mcpRpc(final String raw) {
+        if (!pageReady) return McpHttpServer.errorResponse(null, -32002, "QGen 页面尚未就绪，请稍后重试");
+        final String rid = "r" + rpcSeq.incrementAndGet();
+        final RpcWaiter waiter = newRpcWaiter(rid);
+        final String js = "(function(){try{return window.QGenMcp?QGenMcp.handleRpc(" +
+                org.json.JSONObject.quote(raw) + "):null;}catch(e){return {jsonrpc:'2.0',id:null,error:{code:-32603,message:String(e&&e.message||e)}};}})()";
+        runOnUiThread(new Runnable() {
+            @Override public void run() { evalJs(js, waiter); }
+        });
+        try {
+            if (!waiter.latch.await(60000, java.util.concurrent.TimeUnit.MILLISECONDS)) {
+                removeWaiter(rid);
+                return McpHttpServer.errorResponse(null, -32001, "MCP 工具执行超时");
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return McpHttpServer.errorResponse(null, -32001, "MCP 工具执行被中断");
+        }
+        return waiter.result;
     }
 
     @Override
@@ -673,6 +771,181 @@ public class MainActivity extends Activity {
                 }
             });
         }
+
+        /* ---------------- 内嵌 MCP ---------------- */
+
+        @JavascriptInterface
+        public String mcpServerInfo() {
+            if (mcpServer == null) return "{\"ok\":false,\"running\":false}";
+            return mcpServer.infoJson();
+        }
+
+        @JavascriptInterface
+        public void copyText(String text) {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("QGen MCP", text == null ? "" : text));
+                toastMsg("已复制到剪贴板");
+            } catch (Exception e) {
+                toastMsg("复制失败：" + e.getMessage());
+            }
+        }
+
+        @JavascriptInterface
+        public void mcpRestart() {
+            if (mcpServer != null) mcpServer.stop();
+            mcpServer = new McpHttpServer(mcpHost());
+            startMcp();
+        }
+
+        @JavascriptInterface
+        public String mcpFileStat(String path) {
+            JSONObject o = new JSONObject();
+            try {
+                File f = new File(path);
+                o.put("ok", f.exists() && f.canRead());
+                o.put("path", f.getAbsolutePath());
+                o.put("size", f.length());
+                o.put("mtime", f.lastModified());
+                o.put("writable", f.canWrite());
+                if (!f.exists()) o.put("error", "文件不存在：" + path);
+                else if (!f.canRead()) o.put("error", "没有读取权限（请在系统设置中授予 QGen 所有文件访问权限）");
+            } catch (Exception e) {
+                try { o.put("ok", false).put("error", e.getMessage()); } catch (Exception ignored) { }
+            }
+            return o.toString();
+        }
+
+        @JavascriptInterface
+        public String mcpReadChunk(String path, int offset, int len) {
+            JSONObject o = new JSONObject();
+            try {
+                RandomAccessFile raf = new RandomAccessFile(path, "r");
+                try {
+                    long size = raf.length();
+                    int start = Math.max(0, Math.min(offset, (int) size));
+                    int n = (int) Math.max(0, Math.min(len, size - start));
+                    byte[] b = new byte[n];
+                    raf.seek(start);
+                    raf.readFully(b);
+                    o.put("ok", true).put("data", Base64.encodeToString(b, Base64.NO_WRAP)).put("size", n);
+                } finally {
+                    raf.close();
+                }
+            } catch (Exception e) {
+                try { o.put("ok", false).put("error", "读取失败：" + e.getMessage()); } catch (Exception ignored) { }
+            }
+            return o.toString();
+        }
+
+        @JavascriptInterface
+        public synchronized String mcpWriteBegin(String path) {
+            JSONObject o = new JSONObject();
+            try {
+                if (mcpOut != null) { try { mcpOut.close(); } catch (Exception ignored) { } }
+                mcpTarget = new File(path);
+                File parent = mcpTarget.getParentFile();
+                if (parent != null && !parent.exists()) throw new Exception("目录不存在：" + parent.getAbsolutePath());
+                mcpTmp = new File(path + ".qgen-tmp");
+                if (mcpTmp.exists() && !mcpTmp.delete()) throw new Exception("无法删除旧临时文件");
+                mcpOut = new BufferedOutputStream(new FileOutputStream(mcpTmp));
+                o.put("ok", true).put("path", mcpTarget.getAbsolutePath());
+            } catch (Exception e) {
+                mcpOut = null;
+                mcpTmp = null;
+                mcpTarget = null;
+                try { o.put("ok", false).put("error", "无法写入：" + e.getMessage()); } catch (Exception ignored) { }
+            }
+            return o.toString();
+        }
+
+        @JavascriptInterface
+        public synchronized String mcpWriteChunk(String b64) {
+            JSONObject o = new JSONObject();
+            try {
+                if (mcpOut == null) throw new Exception("没有打开的写入流");
+                byte[] b = Base64.decode(b64, Base64.DEFAULT);
+                mcpOut.write(b);
+                o.put("ok", true).put("size", b.length);
+            } catch (Exception e) {
+                try { o.put("ok", false).put("error", "写入失败：" + e.getMessage()); } catch (Exception ignored) { }
+            }
+            return o.toString();
+        }
+
+        @JavascriptInterface
+        public synchronized String mcpWriteEnd() {
+            JSONObject o = new JSONObject();
+            try {
+                if (mcpOut == null || mcpTmp == null || mcpTarget == null) throw new Exception("没有打开的写入流");
+                mcpOut.flush();
+                mcpOut.close();
+                mcpOut = null;
+                if (mcpTarget.exists()) {
+                    File bak = new File(mcpTarget.getAbsolutePath() + ".bak");
+                    copyFile(mcpTarget, bak);
+                }
+                if (!mcpTmp.renameTo(mcpTarget)) {
+                    copyFile(mcpTmp, mcpTarget);
+                    if (!mcpTmp.delete()) { /* 留下临时文件不影响结果 */ }
+                }
+                o.put("ok", true).put("size", mcpTarget.length()).put("path", mcpTarget.getAbsolutePath());
+            } catch (Exception e) {
+                try { o.put("ok", false).put("error", "保存失败：" + e.getMessage()); } catch (Exception ignored) { }
+                if (mcpTmp != null) mcpTmp.delete();
+            } finally {
+                if (mcpOut != null) { try { mcpOut.close(); } catch (Exception ignored) { } mcpOut = null; }
+                mcpTmp = null;
+                mcpTarget = null;
+            }
+            return o.toString();
+        }
+
+        @JavascriptInterface
+        public synchronized void mcpWriteAbort() {
+            if (mcpOut != null) { try { mcpOut.close(); } catch (Exception ignored) { } mcpOut = null; }
+            if (mcpTmp != null) { mcpTmp.delete(); mcpTmp = null; }
+            mcpTarget = null;
+        }
+
+        @JavascriptInterface
+        public boolean mcpHasAllFiles() {
+            if (Build.VERSION.SDK_INT < 30) return true;
+            return Environment.isExternalStorageManager();
+        }
+
+        @JavascriptInterface
+        public void mcpRequestAllFiles() {
+            try {
+                Intent i;
+                if (Build.VERSION.SDK_INT >= 30) {
+                    i = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    i.setData(Uri.parse("package:" + getPackageName()));
+                } else {
+                    i = new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION);
+                }
+                startActivity(i);
+            } catch (Exception e) {
+                try {
+                    startActivity(new Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION));
+                } catch (Exception e2) {
+                    toastMsg("请到系统设置 → 应用 → QGen → 权限中开启所有文件访问");
+                }
+            }
+        }
+
+        private void copyFile(File from, File to) throws Exception {
+            InputStream in = new FileInputStream(from);
+            try {
+                OutputStream out = new FileOutputStream(to);
+                try {
+                    byte[] buf = new byte[65536];
+                    int n;
+                    while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+                    out.flush();
+                } finally { out.close(); }
+            } finally { in.close(); }
+        }
     }
 
     /* ------------------------------------------------------------------ */
@@ -752,5 +1025,6 @@ public class MainActivity extends Activity {
                 callback("onTextSaved", ok(false).put("message", "保存文本失败：" + e.getMessage()));
             }
         }
+
     }
 }

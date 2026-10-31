@@ -1702,7 +1702,7 @@
 
   function about() {
     var info = Native.appInfo() || {};
-    var ver = info.version || '1.3.12';
+    var ver = info.version || '1.4.0';
     showModal('关于 QGen Android', '' +
       '<h3>QGen Android ' + esc(ver) + '</h3>' +
       '<p>QSP 游戏（.qsp）编辑器，功能参考开源的 <b>QGen 4.3</b>（QSP Foundation）。</p>' +
@@ -1711,58 +1711,83 @@
       '<div class="kv"><span>Android SDK</span><span>' + (info.sdk || '') + '</span></div>' +
       '<div class="mcp-box">' +
         '<div class="mcp-title">MCP 服务（供 AI 查找/修改 .qsp）</div>' +
-        '<div class="kv"><span>地址</span><span class="mono">http://127.0.0.1:<b id="mcp-port">8790</b>/mcp</span></div>' +
+        '<div class="mcp-addr-row">' +
+          '<input id="mcp-addr" class="mono" readonly value="http://127.0.0.1:8790/mcp" onclick="this.select()">' +
+          '<button id="mcp-copy" class="text-btn" type="button">复制</button>' +
+        '</div>' +
         '<div class="kv"><span>状态</span><span id="mcp-state">检测中…</span></div>' +
         '<div class="kv"><span>工具</span><span id="mcp-tools">—</span></div>' +
-        '<div class="mcp-label">启动命令（长按可复制）</div>' +
-        '<textarea class="mcp-cmd" readonly rows="2">nohup sh &lt;项目目录&gt;/mcp/start-http.sh 8790 &gt; ~/qsp-mcp.log 2&gt;&amp;1 &amp;</textarea>' +
-        '<div class="mcp-label">APK 内置文件</div>' +
-        '<div class="mcp-path">assets/mcp/server.js · assets/mcp/start-http.sh · 只监听本机回环</div>' +
+        '<div class="kv"><span>文件访问</span><span id="mcp-files">—</span></div>' +
+        '<div class="mcp-path">App 启动后自动运行，只监听本机回环 127.0.0.1；退出 App 即停止。</div>' +
       '</div>',
       [{ text: '好', primary: true }]);
 
-    // 追加一个不关闭弹窗的「重新检测」
+    var addr = document.getElementById('mcp-addr');
+    var copy = document.getElementById('mcp-copy');
+    if (addr) addr.addEventListener('focus', function () { addr.select(); });
+    if (copy) copy.addEventListener('click', copyMcpAddr);
+
     var bar = document.querySelector('#modal .modal-actions');
     if (bar) {
-      var btn = document.createElement('button');
-      btn.textContent = '重新检测';
-      btn.addEventListener('click', checkMcp);
-      bar.insertBefore(btn, bar.firstChild);
+      var restart = document.createElement('button');
+      restart.textContent = '重启服务';
+      restart.addEventListener('click', function () {
+        Native.mcpRestart();
+        setTimeout(checkMcp, 400);
+      });
+      var recheck = document.createElement('button');
+      recheck.textContent = '重新检测';
+      recheck.addEventListener('click', checkMcp);
+      bar.insertBefore(recheck, bar.firstChild);
+      bar.insertBefore(restart, bar.firstChild);
     }
     checkMcp();
+  }
+
+  function copyMcpAddr() {
+    var addr = document.getElementById('mcp-addr');
+    var text = addr ? addr.value : '';
+    if (!text) return;
+    if (Native.available && Native.copyText) {
+      Native.copyText(text);
+    } else {
+      try {
+        addr.select();
+        document.execCommand('copy');
+      } catch (e) { }
+    }
   }
 
   function checkMcp() {
     var st = document.getElementById('mcp-state');
     var tl = document.getElementById('mcp-tools');
+    var fl = document.getElementById('mcp-files');
+    var addr = document.getElementById('mcp-addr');
     if (!st) return;
-    st.textContent = '检测中…';
-    var done = false;
-    var timer = setTimeout(function () { if (!done) failMcp('超时'); }, 2000);
-    function ok(d) {
-      if (done) return; done = true; clearTimeout(timer);
+    var info = Native.mcpServerInfo ? Native.mcpServerInfo() : {};
+    var port = info && info.port ? info.port : 8790;
+    if (addr) addr.value = 'http://127.0.0.1:' + port + '/mcp';
+
+    if (info && info.running) {
       st.innerHTML = '<span class="dot ok"></span>运行中';
-      tl.textContent = (d && d.tools ? d.tools.length : 0) + ' 个';
-    }
-    function failMcp(why) {
-      if (done) return; done = true; clearTimeout(timer);
+      var n = 0;
+      try { n = (window.QGenMcp ? QGenMcp.toolNames().length : 0); } catch (e) { }
+      tl.textContent = n + ' 个（含记录表批量修改）';
+    } else {
       st.innerHTML = '<span class="dot off"></span>未运行';
-      tl.textContent = '—（' + (why || '连接失败') + '）';
+      tl.textContent = '点“重启服务”再试';
     }
-    var url = 'http://127.0.0.1:8790/';
-    // WebView 的 file:// 源不能直接 fetch http，优先走原生桥
-    var raw = Native.httpGet ? Native.httpGet(url) : '';
-    if (raw) {
-      try { ok(JSON.parse(raw)); } catch (e) { failMcp('响应格式错误'); }
-      return;
-    }
-    try {
-      fetch(url, { mode: 'cors', cache: 'no-store' })
-        .then(function (r) { return r.json(); })
-        .then(ok)
-        .catch(function (e) { failMcp(e && e.message); });
-    } catch (e) {
-      failMcp(e.message);
+
+    var hasAll = Native.mcpHasAllFiles ? Native.mcpHasAllFiles() : true;
+    if (fl) {
+      if (hasAll) {
+        fl.innerHTML = '<span class="dot ok"></span>可读写共享目录';
+      } else {
+        fl.innerHTML = '<span class="dot off"></span>仅能读 App 私有目录 ' +
+          '<button id="mcp-grant" class="text-btn" type="button">去授权</button>';
+        var g = document.getElementById('mcp-grant');
+        if (g) g.addEventListener('click', function () { Native.mcpRequestAllFiles(); });
+      }
     }
   }
 
