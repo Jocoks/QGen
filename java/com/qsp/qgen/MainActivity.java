@@ -44,7 +44,7 @@ import java.util.List;
  */
 public class MainActivity extends Activity {
 
-    public static final String VERSION_NAME = "1.3.7";
+    public static final String VERSION_NAME = "1.3.8";
 
     /** 优先读系统里的 versionName，避免和常量不一致 */
     private String versionName() {
@@ -60,6 +60,7 @@ public class MainActivity extends Activity {
     private static final int REQ_VIEW_OPEN = 1003;
     private static final int REQ_ZIP_OPEN = 1004;
     private static final int REQ_ZIP_SAVE = 1005;
+    private static final int REQ_TEXT_SAVE = 1006;
 
     private WebView web;
     private final Bridge bridge = new Bridge();
@@ -79,6 +80,10 @@ public class MainActivity extends Activity {
     private ByteArrayOutputStream pendingZip;
     private byte[] pendingZipOut;
     private String pendingZipName;
+
+    /** 文本导出（记录表 CSV） */
+    private byte[] pendingTextOut;
+    private String pendingTextName;
 
     private SharedPreferences prefs;
 
@@ -500,6 +505,38 @@ public class MainActivity extends Activity {
             });
         }
 
+        /** 保存 UTF-8 文本（记录表 CSV），成功后回调 onTextSaved */
+        @JavascriptInterface
+        public void saveText(final String text, final String suggestedName) {
+            byte[] data;
+            try {
+                data = (text == null ? "" : text).getBytes("UTF-8");
+            } catch (Exception e) {
+                toastMsg("文本编码失败");
+                return;
+            }
+            if (data.length == 0) { toastMsg("没有可保存的内容"); return; }
+            pendingTextOut = data;
+            pendingTextName = suggestedName == null ? "qgen-records.csv" : suggestedName;
+            runOnUiThread(new Runnable() {
+                @Override public void run() {
+                    Intent i = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("text/csv");
+                    i.putExtra(Intent.EXTRA_TITLE, pendingTextName);
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                            | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                            | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                    try {
+                        startActivityForResult(i, REQ_TEXT_SAVE);
+                    } catch (Exception e) {
+                        pendingTextOut = null;
+                        toastMsg("没有可用的文件选择器");
+                    }
+                }
+            });
+        }
+
         /** 仅允许访问本机回环的简单 GET（给「关于」里的 MCP 状态检测用） */
         @JavascriptInterface
         public String httpGet(String url) {
@@ -653,6 +690,10 @@ public class MainActivity extends Activity {
                 pendingZipOut = null;
                 callback("onZipSaved", ok(false).put("canceled", true));
             }
+            if (requestCode == REQ_TEXT_SAVE) {
+                pendingTextOut = null;
+                callback("onTextSaved", ok(false).put("canceled", true));
+            }
             return;
         }
         Uri uri = data.getData();
@@ -696,6 +737,19 @@ public class MainActivity extends Activity {
                 callback("onZipSaved", ok(true).put("name", queryName(uri)).put("size", out.length));
             } catch (Exception e) {
                 callback("onZipSaved", ok(false).put("message", "保存 ZIP 失败：" + e.getMessage()));
+            }
+        } else if (requestCode == REQ_TEXT_SAVE) {
+            byte[] out = pendingTextOut;
+            pendingTextOut = null;
+            if (out == null) {
+                callback("onTextSaved", ok(false).put("message", "没有待保存的数据"));
+                return;
+            }
+            try {
+                writeToUri(uri, out);
+                callback("onTextSaved", ok(true).put("name", queryName(uri)).put("size", out.length));
+            } catch (Exception e) {
+                callback("onTextSaved", ok(false).put("message", "保存文本失败：" + e.getMessage()));
             }
         }
     }

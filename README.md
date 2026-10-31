@@ -1,4 +1,4 @@
-# QGen Android 1.3.7
+# QGen Android 1.3.8
 
 **QSP 游戏（`.qsp`）编辑器 · 安卓版**
 
@@ -9,6 +9,9 @@
 已实测：用本 App 打开 8.6 MB 的 `jack.qsp`（194 个位置、约 421 万字符代码），**原样保存后与原文件 md5 完全一致**
 （`7b603abd9df2d71b9f2e0518ec021173`），即读写无损。
 
+> **1.3.8 变更**：新增只读 **记录表**。自动扫描 QSP 里按 id 聚合的静态数据（数组、helper 参数、
+> 代码块），生成可筛选的表格；可人工加列、做标记并导出 CSV。
+>
 > **1.3.7 变更**：新增 **TXT 工程导出 / 导入**。可以把当前 `.qsp` 拆成「每个位置一个 `.txt`」的工程，
 > 连同 `manifest.json` 打包成 `.zip`；也能把这种 `.zip` 还原成 `.qsp`（支持逐字节无损往返）。
 >
@@ -47,6 +50,7 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 | 最近打开 | 记住最近 12 个文件（含持久读/写授权） |
 | **TXT 工程导出** | 把 `.qsp` 拆成每个位置一个 `.txt`，附 `manifest.json` / `README.txt`，打包成 `.zip` 保存 |
 | **TXT 工程导入** | 选择 `.zip` 还原成 `.qsp`；有 manifest 时完整恢复密码、描述、动作与文件头，无 manifest 时按文件名兼容导入 |
+| **记录表** | 自动发现按 id 聚合的静态记录族（数组/helper/代码块），只读表格查看、筛选、人工加列/标记、导出 CSV |
 
 **有意未实现**（见「已知限制」）：QGen 的文件夹（project .xml）结构、txt2gam 原生格式的完整兼容、
 内置 QSP 播放器（需另移植 qspcore）。
@@ -61,8 +65,8 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 ## 三、安装
 
 已发布 APK 见 [Releases](https://github.com/Jocoks/QGen/releases) 里的 `QGen-Android-1.3.6.apk`
-（minSdk 26 / targetSdk 34，已用 debug 证书签名）。本文档对应的 1.3.7 为源码版本，
-需按第八节自行构建（或等待 Release 更新）。
+（minSdk 26 / targetSdk 34，已用 debug 证书签名）。本文档对应的 1.3.8 为源码版本，
+需按第九节自行构建（或等待 Release 更新）。
 
 1. 把 APK 传到手机，点开安装；如提示「未知来源」，允许一次即可。
 2. 首次打开从「打开 .qsp 文件」开始。
@@ -82,6 +86,8 @@ App 首页底部点 **关于 / 许可**，里面有一块 **MCP 服务** 面板�
 6. **导出 TXT 工程**：右上 `⋮` →「📦 导出 TXT 工程（.zip）」→ 选保存位置，得到可解压编辑的 zip。
 7. **导入 TXT 工程**：右上 `⋮` →「📥 导入 TXT 工程（.zip）」→ 选 zip；确认未保存修改后导入，
    再「另存为」成 `.qsp`。
+8. **记录表**：右上 `⋮` →「🧾 记录表（批量查看）」→ 选一个候选记录族 → 查看/筛选；
+   点「＋ 添加列」可加人工列，点人工列单元格填标记；「导出 CSV」保存当前表。
 
 ## 五、TXT 工程（.zip）
 
@@ -114,7 +120,37 @@ $ node tools/test-txt-zip.js /path/to/jack.qsp
 实现见 `assets/ui/qsp-text.js`（工程清单与文本拆分）和 `assets/ui/zip.js`（纯 JS ZIP 读写），
 不依赖 Java 的 `java.util.zip`，因此浏览器演示模式与 Node 测试也能跑同一套代码。
 
-## 六、QSP 文件格式（实现依据）
+## 六、记录表（只读批量查看）
+
+QSP 里大量“物品/敌人/NPC”并不是用统一字段直接赋值的：常见写法是
+`dynamic $ib_cycle, 'id', '名称', 价格, ...` 或 `$item_name['id'] = '...'`。
+直接 grep 某个字段会漏掉另一套写法，所以 1.3.8 加了“记录表”：
+
+* 打开文件 → 右上 `⋮` →「🧾 记录表（批量查看）」。
+* 扫描会按**位置**聚合静态 key（数组下标、`dynamic` 的第一个参数），生成候选记录族；
+  每个候选显示记录数、列数和前几个 id。
+* 点候选进入表格：首列是 id，其余列来自数组字段、helper 参数、代码块或人工列；缺失值显示 `—`。
+* **添加列**：表格上方「＋ 添加列」，来源可选：
+  * `Helper 参数`：指定 helper 名与参数序号（1 起，主键通常是 1）；
+  * `数组字段`：如 `$item_name`，可加二级路径；
+  * `代码块`：取 `$item_property['id'] = { ... }` 的整段 `{ ... }`；
+  * `固定值` / `人工标记`。
+* **人工标记**：人工列的单元格可点击编辑，值保存在本机 `localStorage`，按“文件名 + 描述符 id”区分；
+  重新打开同一文件仍保留。人工列会以淡黄色底显示。
+* **导出 CSV**：导出当前记录族的全部行（UTF-8 带 BOM，Excel 可直接打开）。
+
+自动扫描只覆盖**静态、按 key 聚合**的数据，不执行 QSP 逻辑；带复杂条件分支、循环动态生成的记录
+可能识别不到，需要人工建列或后续扩展描述符。记录表目前**只读**，不会回写 `.qsp` —— 确认批量修改的
+交互和 diff 后，再逐步接写回。
+
+命令行验证：
+
+```bash
+$ node tools/test-records.js /path/to/game.qsp
+  结果: 14 通过, 0 失败
+```
+
+## 七、QSP 文件格式（实现依据）
 
 依据 `qgen/game.cpp`（QGen 4.3.0-b1）与实测 `jack.qsp` 反推，文件是 **UCS-2LE（UTF-16LE 码元）** 文本：
 
@@ -145,7 +181,7 @@ $ node tools/test-qsp.js /path/to/jack.qsp
   结果: 8 通过, 0 失败
 ```
 
-## 七、源码结构
+## 八、源码结构
 
 ```
 AndroidManifest.xml            竖屏锁定、SAF/VIEW 入口
@@ -157,7 +193,8 @@ assets/ui/syntax.js            QSP 语法高亮（纯函数，可 Node 测试）
 assets/ui/native.js            JS ↔ Java 桥接层（浏览器演示模式降级）
 assets/ui/zip.js              ★ 纯 JS ZIP 打包/解包（STORE/DEFLATE，CRC 校验）
 assets/ui/qsp-text.js         ★ TXT 工程清单与拆分/还原
-assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存/TXT 工程）
+assets/ui/records.js          ★ 记录表：静态扫描、描述符、建表、CSV
+assets/ui/app.js               界面逻辑（列表/代码编辑器/搜索/对话框/保存/TXT 工程/记录表）
 mcp/server.js                  ★ MCP 本地服务（stdio，AI 可直接读写 .qsp）
 mcp/README.md                  MCP 工具文档
 mcp/selftest.js                MCP 自测脚本
@@ -165,9 +202,10 @@ res/                          图标（自适应矢量）、主题、字符串
 build.sh                       设备内构建脚本
 tools/test-qsp.js              Node 端编解码测试
 tools/test-txt-zip.js          Node 端 TXT 工程 / ZIP 往返测试
+tools/test-records.js          Node 端记录表扫描/建表/人工列测试
 ```
 
-## 八、构建（在 Android 设备上直接构建，无需 Gradle）
+## 九、构建（在 Android 设备上直接构建，无需 Gradle）
 
 本仓库自带 `build.sh`，使用 Termux 环境里的 `aapt2` + `d8` + `apksigner` + JDK17：
 
@@ -185,7 +223,7 @@ export KEYSTORE=$HOME/.android/debug.keystore           # 签名证书
 
 `build.sh` 做四件事：`aapt2 compile/link` → `javac`（对 android.jar）→ `d8` → 打 dex + `apksigner`。
 
-## 九、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
+## 十、MCP 本地服务（给 AI 用的，1.1.0 起随 APK 内置）
 
 `mcp/` 里附带一个 stdio MCP 服务，让 AI 直接查找/阅读/修改 `.qsp`：
 
@@ -212,7 +250,7 @@ APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 
 安全：写入前自动 `.bak` 备份、临时文件原子替换、写后重新解析校验、批量替换默认干跑。
 详见 [mcp/README.md](mcp/README.md)。
 
-## 十、已知限制
+## 十一、已知限制
 
 * 只支持 **UCS-2 新版** `.qsp`（`QSPGAME` 头）。QGen 4 之前的旧 `.gam` 格式会提示不支持。
 * 不支持 QGen 的「文件夹」工程结构（`.xml` 工程文件），位置列表是平铺的。
@@ -221,9 +259,10 @@ APK 的 `assets/mcp/` 里内置了一份可直接运行的 `server.js`（连同 
   也可用无 manifest 的「每个位置一个 txt」兼容导入）。
 * TXT 工程导出需要浏览器/WebView 支持 `CompressionStream`；不支持时自动退化为不压缩的 STORE，
   仍可正常导出，只是 zip 更大。导入 DEFLATE 工程需要 `DecompressionStream`（较新的 Android System WebView）。
+* 记录表只做静态聚合，不执行 QSP 逻辑，也不回写文件；人工列保存在本机 localStorage。
 * 一次只打开一个文件；未做自动保存草稿。
 
-## 十一、许可与致谢
+## 十二、许可与致谢
 
 * 本程序以 **GPLv2+** 发布，与 QGen 一致。
 * 文件格式实现参考 QGen 4.3（作者 Vladimir Bauer / Nex / Shchannikov Dmitry / Valeriy Argunov），

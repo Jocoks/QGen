@@ -158,6 +158,12 @@
         QGenNative.writeZipChunk(bytesToB64(u8.subarray(i, Math.min(i + CHUNK, u8.length))));
       }
       QGenNative.saveZip(name || 'qgen-txt.zip');
+    },
+
+    /* 导出 UTF-8 文本（CSV），弹出系统「另存为」 */
+    saveText: function (text, name) {
+      if (!hasNative) return;
+      QGenNative.saveText(text == null ? '' : String(text), name || 'qgen-records.csv');
     }
   };
 
@@ -226,6 +232,18 @@
       } catch (e) { }
       setTimeout(function () {
         fire('onZipSaved', { ok: true, name: name || 'qgen-txt.zip', size: u8.length, demo: true });
+      }, 50);
+    };
+    Native.saveText = function (text, name) {
+      try {
+        var blob = new Blob([text == null ? '' : String(text)], { type: 'text/csv;charset=utf-8' });
+        var a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = name || 'qgen-records.csv';
+        a.click();
+      } catch (e) { }
+      setTimeout(function () {
+        fire('onTextSaved', { ok: true, name: name || 'qgen-records.csv', size: String(text || '').length, demo: true });
       }, 50);
     };
     Native.writeAll = function (u8) {

@@ -18,10 +18,16 @@
     find: { open: false, q: '', idx: -1, marks: [] },
     query: '',
     dirty: false,
-    busy: false
+    busy: false,
+    records: {
+      scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
+      active: null, table: null, q: ''
+    }
   };
 
   var LIST_RENDER_LIMIT = 400;
+  var REC_ROW_LIMIT = 300;
+  var REC_FAMILY_LIMIT = 200;
 
   /* ------------------------------------------------------------------ */
   /* 工具                                                                */
@@ -70,6 +76,7 @@
     S.view = view;
     $('screen-home').hidden = view !== 'home';
     $('screen-list').hidden = view !== 'list';
+    $('screen-records').hidden = view !== 'records';
     $('screen-editor').hidden = view !== 'editor';
     $('btn-back').hidden = view === 'home';
     $('btn-find').hidden = view !== 'editor';
@@ -85,7 +92,14 @@
       return;
     }
     var nm = S.file.name || '未命名.qsp';
-    if (S.view === 'editor' && S.cur >= 0) {
+    if (S.view === 'records') {
+      var rec = S.records;
+      var active = rec.active && rec.active.descriptor;
+      title.textContent = active ? active.label : '记录表';
+      sub.textContent = active
+        ? (rec.table ? rec.table.rows.length + ' 条记录 · ' + rec.table.columns.length + ' 列' : nm)
+        : (rec.families.length ? rec.families.length + ' 个候选记录族 · ' + nm : nm);
+    } else if (S.view === 'editor' && S.cur >= 0) {
       var loc = S.game.locations[S.cur];
       title.textContent = loc ? loc.name : '(未命名位置)';
       sub.textContent = nm + (S.dirty ? ' · 未保存' : '');
@@ -107,6 +121,7 @@
     $('search').value = '';
     $('search-clear').hidden = true;
     S.file = file;
+    resetRecords();
     if (S.find.open) closeFind();
     setDirty(!!file.dirty);
     renderList();
@@ -428,6 +443,363 @@
     if (more) { locationMenu(idx); return; }
     openLocation(idx);
   }
+
+  /* ------------------------------------------------------------------ */
+  /* 记录表（只读聚合视图）                                               */
+  /* ------------------------------------------------------------------ */
+
+  function resetRecords() {
+    S.records = {
+      scanned: false, busy: false, families: [], scanMs: 0, statements: 0,
+      active: null, table: null, q: ''
+    };
+    var list = $('rec-family-list');
+    var panel = $('rec-table-panel');
+    var empty = $('rec-empty');
+    if (list) list.innerHTML = '';
+    if (panel) panel.hidden = true;
+    if (empty) empty.hidden = true;
+    if ($('rec-search')) $('rec-search').value = '';
+    if ($('rec-search-clear')) $('rec-search-clear').hidden = true;
+    if ($('rec-count')) $('rec-count').textContent = '尚未扫描';
+  }
+
+  var recMemStore = {};
+
+  function recStoreKey(id) {
+    return 'qgen.records.v1.' + (S.file.name || 'untitled') + '.' + id;
+  }
+
+  function recStoreGet(key) {
+    try { return localStorage.getItem(key); }
+    catch (e) { return recMemStore[key] || null; }
+  }
+
+  function recStoreSet(key, value) {
+    try { localStorage.setItem(key, value); return true; }
+    catch (e) { recMemStore[key] = value; return false; }
+  }
+
+  function recLoadSaved(id) {
+    try {
+      var raw = recStoreGet(recStoreKey(id));
+      if (!raw) return null;
+      var v = QSPRecords.validateDescriptor(JSON.parse(raw));
+      return v.ok ? v.descriptor : null;
+    } catch (e) { return null; }
+  }
+
+  function recSaveDescriptor(d) {
+    try {
+      recStoreSet(recStoreKey(d.id), JSON.stringify(d));
+      return true;
+    } catch (e) {
+      toast('保存列设置失败：' + (e && e.message || e));
+      return false;
+    }
+  }
+
+  function openRecords() {
+    if (!S.game) return;
+    show('records');
+    recShowFamilies();
+    if (!S.records.scanned && !S.records.busy) scanRecords();
+    else if (S.records.scanned) renderFamilies();
+  }
+
+  function scanRecords() {
+    var rec = S.records;
+    if (rec.busy || !S.game) return;
+    rec.busy = true;
+    rec.active = null;
+    rec.table = null;
+    rec.q = '';
+    if ($('rec-search')) $('rec-search').value = '';
+    if ($('rec-search-clear')) $('rec-search-clear').hidden = true;
+    $('rec-count').textContent = '正在扫描静态数据…';
+    $('rec-empty').hidden = true;
+    $('rec-family-list').innerHTML = '';
+    var t0 = Date.now();
+    setTimeout(function () {
+      try {
+        var res = QSPRecords.scan(S.game, { minRecords: 3, minFields: 2 });
+        rec.families = res.families || [];
+        rec.statements = res.statementCount || 0;
+        rec.scanMs = Date.now() - t0;
+        rec.scanned = true;
+        rec.busy = false;
+        renderFamilies();
+        toast('发现 ' + rec.families.length + ' 个候选记录族');
+      } catch (e) {
+        rec.busy = false;
+        rec.scanned = true;
+        $('rec-count').textContent = '扫描失败';
+        $('rec-empty').hidden = false;
+        $('rec-empty').textContent = '扫描失败：' + (e && e.message || e);
+      }
+    }, 30);
+  }
+
+  function recShowFamilies() {
+    S.records.active = null;
+    S.records.table = null;
+    S.records.q = '';
+    $('rec-search').value = '';
+    $('rec-search-clear').hidden = true;
+    $('rec-family-list').hidden = false;
+    $('rec-table-panel').hidden = true;
+    $('rec-search').placeholder = '筛选记录族…';
+    updateTitle();
+  }
+
+  function renderFamilies() {
+    var rec = S.records;
+    var q = (rec.q || '').toLowerCase();
+    var all = rec.families || [];
+    var list = all.filter(function (f) {
+      if (!q) return true;
+      var hay = f.label + ' ' + (f.location || '') + ' ' +
+        (f.descriptor.fields || []).map(function (x) { return x.label; }).join(' ');
+      return hay.toLowerCase().indexOf(q) >= 0;
+    });
+    var html = '';
+    list.slice(0, REC_FAMILY_LIMIT).forEach(function (f) {
+      var keys = (f.preview || []).join('、');
+      html += '<button class="rec-card" data-fam="' + esc(f.id) + '">' +
+        '<div class="rec-card-top"><span class="rec-card-name">' + esc(f.label) + '</span>' +
+        '<span class="rec-pill">' + f.recordCount + ' 条</span></div>' +
+        '<div class="rec-card-meta">' + esc(f.location || '') + ' · ' + f.fieldCount + ' 列</div>' +
+        (keys ? '<div class="rec-card-keys">' + esc(keys) + '</div>' : '') +
+        '</button>';
+    });
+    $('rec-family-list').innerHTML = html;
+    $('rec-family-list').hidden = false;
+    $('rec-table-panel').hidden = true;
+    $('rec-empty').hidden = list.length > 0;
+    if (!list.length) $('rec-empty').textContent = '没有匹配的记录族';
+    var msg = list.length + ' 个候选记录族';
+    if (list.length > REC_FAMILY_LIMIT) msg += '（仅显示前 ' + REC_FAMILY_LIMIT + ' 个）';
+    msg += ' · ' + rec.statements + ' 条语句 · 扫描 ' + (rec.scanMs / 1000).toFixed(1) + 's';
+    $('rec-count').textContent = msg;
+    updateTitle();
+  }
+
+  function openFamily(famId) {
+    var fam = (S.records.families || []).filter(function (f) { return f.id === famId; })[0];
+    if (!fam) return;
+    var d = recLoadSaved(fam.descriptor.id) || fam.descriptor;
+    if (!d.manual || typeof d.manual !== 'object') d.manual = {};
+    S.records.active = { family: fam, descriptor: d };
+    S.records.q = '';
+    $('rec-search').value = '';
+    $('rec-search-clear').hidden = true;
+    $('rec-search').placeholder = '筛选记录（id / 字段值）…';
+    $('rec-family-list').hidden = true;
+    $('rec-table-panel').hidden = false;
+    recBuildTable();
+    renderRecordTable();
+    updateTitle();
+  }
+
+  function recBuildTable() {
+    var a = S.records.active;
+    if (!a) return false;
+    try {
+      var t = QSPRecords.buildTable(S.game, a.descriptor);
+      S.records.table = t;
+      if (t.ok) a.descriptor = t.descriptor;
+      return t.ok;
+    } catch (e) {
+      S.records.table = { ok: false, errors: [String(e && e.message || e)], columns: [], rows: [] };
+      return false;
+    }
+  }
+
+  function recCellText(v) {
+    var s = v == null ? '' : String(v);
+    s = s.replace(/\s+/g, ' ').trim();
+    return s.length > 180 ? s.slice(0, 180) + '…' : s;
+  }
+
+  function renderRecordTable() {
+    var a = S.records.active, t = S.records.table;
+    if (!a) return;
+    $('rec-table-title').textContent = a.descriptor.label + (t && t.ok ? ' · ' + t.rows.length + ' 条' : '');
+    if (!t || !t.ok) {
+      $('rec-table-wrap').innerHTML = '<div class="rec-note">无法生成表格：' +
+        esc((t && t.errors || []).join('；')) + '</div>';
+      $('rec-count').textContent = '无法生成表格';
+      $('rec-empty').hidden = true;
+      return;
+    }
+    var q = (S.records.q || '').toLowerCase();
+    var rows = t.rows.filter(function (r) {
+      if (!q) return true;
+      if (String(r.id).toLowerCase().indexOf(q) >= 0) return true;
+      for (var i = 0; i < t.columns.length; i++) {
+        if (t.columns[i].type === 'code') continue;
+        var v = r.values[t.columns[i].key];
+        if (String(v == null ? '' : v).toLowerCase().indexOf(q) >= 0) return true;
+      }
+      return false;
+    });
+    var html = '<table class="rec-table"><thead><tr><th>id</th>';
+    t.columns.forEach(function (c) {
+      html += '<th>' + esc(c.label) + '<span class="rec-col-type">' + esc(c.type) +
+        (c.readOnly ? ' · 只读' : '') + '</span></th>';
+    });
+    html += '</tr></thead><tbody>';
+    rows.slice(0, REC_ROW_LIMIT).forEach(function (r) {
+      html += '<tr><td title="' + esc(r.id) + '">' + esc(r.id) + '</td>';
+      t.columns.forEach(function (c) {
+        var v = r.values[c.key];
+        var fl = r.flags[c.key] || [];
+        var cls = ['rec-cell'];
+        if (c.type === 'code') cls.push('rec-code');
+        if (fl.indexOf('missing') >= 0 || (v === '' && c.source && c.source.kind === 'manual')) cls.push('rec-missing');
+        if (fl.indexOf('conflict') >= 0) cls.push('rec-conflict');
+        var src = c.source || {};
+        var isManual = src.kind === 'manual';
+        if (isManual) cls.push('rec-manual');
+        html += '<td class="' + cls.join(' ') + '"' +
+          (isManual ? ' data-id="' + esc(r.id) + '" data-name="' + esc(src.name) + '"' : '') +
+          ' title="' + esc(recCellText(v)) + '">' +
+          (v === '' ? '<span class="rec-missing">—</span>' : esc(recCellText(v))) +
+          '</td>';
+      });
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    if (!rows.length) html = '<div class="rec-note">没有匹配的记录</div>';
+    $('rec-table-wrap').innerHTML = html;
+    var msg = rows.length + ' / ' + t.rows.length + ' 条记录 · ' + t.columns.length + ' 列';
+    if (rows.length > REC_ROW_LIMIT) msg += '（仅显示前 ' + REC_ROW_LIMIT + ' 条）';
+    var warn = t.warnings && t.warnings.length ? ' · ' + t.warnings.length + ' 条字段警告' : '';
+    $('rec-count').textContent = msg + warn;
+    $('rec-empty').hidden = rows.length > 0;
+  }
+
+  function recFilter(q) {
+    S.records.q = q || '';
+    if (S.records.active) renderRecordTable();
+    else renderFamilies();
+  }
+
+  function recBack() {
+    if (!$('rec-table-panel').hidden) {
+      recShowFamilies();
+      renderFamilies();
+      return true;
+    }
+    return false;
+  }
+
+  function recExportCSV() {
+    var t = S.records.table;
+    if (!t || !t.ok) { toast('请先打开一个记录族'); return; }
+    var base = (S.file.name || 'qgen').replace(/\.qsp$/i, '').replace(/[\\/:*?"<>|]+/g, '_');
+    var id = (S.records.active && S.records.active.descriptor.id || 'table').replace(/[^A-Za-z0-9_.-]+/g, '_');
+    var text = QSPRecords.tableToCSV(t);
+    Native.saveText(text, base + '.' + id + '.csv');
+    toast('准备导出 ' + t.rows.length + ' 条记录…');
+  }
+
+  function recFieldFormToggle() {
+    var kind = $('rf-kind').value;
+    $('rf-name-row').hidden = kind === 'literal';
+    $('rf-arg-row').hidden = kind !== 'helperArg';
+    $('rf-path-row').hidden = kind !== 'array' && kind !== 'block';
+    $('rf-value-row').hidden = kind !== 'literal';
+    var lab = $('rf-name-label');
+    if (kind === 'array') lab.textContent = '数组名（如 $item_name）';
+    else if (kind === 'block') lab.textContent = '代码块数组名（如 $item_property）';
+    else if (kind === 'helperArg') lab.textContent = 'Helper 名（如 $ib_cycle）';
+    else if (kind === 'manual') lab.textContent = '人工标记名（自定义）';
+  }
+
+  function recAddField() {
+    var a = S.records.active;
+    if (!a) return;
+    showModal('添加列', '<h3>添加列</h3>' +
+      '<div class="rec-form-row"><label>列名</label><input id="rf-label" placeholder="例如 价格"></div>' +
+      '<div class="rec-form-row"><label>来源</label><select id="rf-kind">' +
+      '<option value="helperArg">Helper 参数</option>' +
+      '<option value="array">数组字段</option>' +
+      '<option value="block">代码块</option>' +
+      '<option value="literal">固定值</option>' +
+      '<option value="manual">人工标记</option></select></div>' +
+      '<div class="rec-form-row" id="rf-name-row"><label id="rf-name-label">名称</label><input id="rf-name" placeholder="$ib_cycle / $item_name"></div>' +
+      '<div class="rec-form-row" id="rf-arg-row"><label>Helper 参数序号（1 起，主键通常是 1）</label><input id="rf-arg" type="number" min="1" value="2"></div>' +
+      '<div class="rec-form-row" id="rf-path-row" hidden><label>数组二级路径（逗号分隔，可空）</label><input id="rf-path" placeholder="可空"></div>' +
+      '<div class="rec-form-row" id="rf-value-row" hidden><label>固定值</label><input id="rf-value"></div>' +
+      '<div class="rec-form-row"><label>类型</label><select id="rf-type">' +
+      '<option value="text">文本</option><option value="number">数字</option>' +
+      '<option value="code">代码块</option><option value="boolean">布尔</option></select></div>',
+      [{ text: '取消' }, { text: '添加', primary: true, fn: function () {
+        var label = ($('rf-label').value || '').trim();
+        if (!label) { toast('请填写列名'); return; }
+        var kind = $('rf-kind').value;
+        var name = ($('rf-name').value || '').trim();
+        var source = { kind: kind };
+        if (kind === 'helperArg') {
+          if (!name) { toast('请填写 Helper 名'); return; }
+          if (name.charAt(0) !== '$') name = '$' + name;
+          var arg = parseInt($('rf-arg').value, 10);
+          if (!(arg >= 1)) { toast('参数序号必须 >= 1'); return; }
+          source.helper = name; source.arg = arg;
+        } else if (kind === 'array' || kind === 'block') {
+          if (!name) { toast('请填写数组名'); return; }
+          if (name.charAt(0) !== '$') name = '$' + name;
+          source.name = name;
+          source.path = ($('rf-path').value || '').split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+        } else if (kind === 'literal') {
+          source.value = $('rf-value').value;
+        } else if (kind === 'manual') {
+          source.name = name || ('m_' + Date.now().toString(36));
+        }
+        var d = a.descriptor;
+        var key = 'f' + (d.fields.length + 1);
+        var n = 1;
+        while (d.fields.some(function (f) { return f.key === key; })) key = 'f' + (d.fields.length + 1) + '_' + (n++);
+        var type = $('rf-type').value;
+        if (kind === 'literal' && type === 'number' && source.value !== '' && !isNaN(Number(source.value))) {
+          source.value = Number(source.value);
+        }
+        var res = QSPRecords.addField(d, { key: key, label: label, type: type, source: source });
+        if (!res.ok) { toast('添加失败：' + res.errors.join('；')); return; }
+        res.descriptor.manual = res.descriptor.manual || {};
+        if (kind === 'manual') res.descriptor.manual[source.name] = res.descriptor.manual[source.name] || {};
+        a.descriptor = res.descriptor;
+        recSaveDescriptor(a.descriptor);
+        recBuildTable();
+        renderRecordTable();
+        updateTitle();
+      } }]);
+    $('rf-kind').addEventListener('change', recFieldFormToggle);
+    recFieldFormToggle();
+  }
+
+  function recTableClick(e) {
+    var td = e.target.closest('td.rec-manual');
+    if (!td) return;
+    var id = td.dataset.id, name = td.dataset.name;
+    var a = S.records.active;
+    if (!a) return;
+    var bucket = (a.descriptor.manual && a.descriptor.manual[name]) || {};
+    promptModal('人工标记', id + ' · ' + name, bucket[id] || '', function (v) {
+      a.descriptor.manual = a.descriptor.manual || {};
+      a.descriptor.manual[name] = a.descriptor.manual[name] || {};
+      a.descriptor.manual[name][id] = v;
+      recSaveDescriptor(a.descriptor);
+      recBuildTable();
+      renderRecordTable();
+    });
+  }
+
+  Native.on('onTextSaved', function (r) {
+    if (r && r.ok) toast('已导出' + (r.name ? '：' + r.name : ' CSV'));
+    else if (!(r && r.canceled)) toast('导出失败：' + ((r && r.message) || '未知错误'));
+  });
 
   /* ------------------------------------------------------------------ */
   /* 编辑器                                                              */
@@ -780,9 +1152,17 @@
       { ico: '📄', text: '另存为…', fn: askSaveAs },
       { ico: '📦', text: '导出 TXT 工程（.zip）', fn: exportTxtProject },
       { ico: '📥', text: '导入 TXT 工程（.zip）', fn: importTxtProject },
+      { ico: '🧾', text: '记录表（批量查看）', fn: openRecords },
       { ico: 'ℹ', text: '游戏信息', fn: showGameInfo }
     ];
-    if (S.view === 'editor' && S.cur >= 0) {
+    if (S.view === 'records') {
+      items = [
+        { ico: '🧾', text: '记录族列表', fn: function () { recShowFamilies(); renderFamilies(); } },
+        { ico: '📤', text: '导出当前表 CSV', fn: recExportCSV },
+        { ico: '🔁', text: '重新扫描', fn: scanRecords },
+        { ico: '←', text: '返回位置列表', fn: function () { show('list'); renderList(); } }
+      ];
+    } else if (S.view === 'editor' && S.cur >= 0) {
       items = items.concat([
         { ico: '✎', text: '重命名此位置', fn: function () { renameLocation(S.cur); } },
         { ico: '⧉', text: '创建副本', fn: function () { duplicateLocation(S.cur); } },
@@ -875,6 +1255,10 @@
   window.qgenBack = function () {
     if (!$('modal-host').hidden) { closeModal(); return true; }
     if (!$('sheet-host').hidden) { closeSheet(); return true; }
+    if (S.view === 'records') {
+      if (recBack()) return true;
+      show('list'); renderList(); return true;
+    }
     if (S.view === 'editor') { show('list'); renderList(); return true; }
     if (S.view === 'list') {
       if (S.dirty) { confirmExit(); return true; }
@@ -1007,6 +1391,29 @@
     });
     $('btn-add-loc').addEventListener('click', addLocation);
     $('loc-list').addEventListener('click', onLocClick);
+
+    $('btn-rec-rescan').addEventListener('click', function () {
+      S.records.scanned = false;
+      scanRecords();
+    });
+    $('btn-rec-csv').addEventListener('click', recExportCSV);
+    $('btn-rec-back').addEventListener('click', recBack);
+    $('btn-rec-add-field').addEventListener('click', recAddField);
+    $('rec-family-list').addEventListener('click', function (e) {
+      var card = e.target.closest('[data-fam]');
+      if (card) openFamily(card.dataset.fam);
+    });
+    $('rec-table-wrap').addEventListener('click', recTableClick);
+    var recTimer = null;
+    $('rec-search').addEventListener('input', function () {
+      var v = this.value.trim();
+      $('rec-search-clear').hidden = !v;
+      if (recTimer) clearTimeout(recTimer);
+      recTimer = setTimeout(function () { recFilter(v); }, 120);
+    });
+    $('rec-search-clear').addEventListener('click', function () {
+      $('rec-search').value = ''; this.hidden = true; recFilter('');
+    });
 
     $('btn-wrap').addEventListener('click', function () {
       S.codeWrap = !S.codeWrap;
